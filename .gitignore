@@ -1,0 +1,29 @@
+# Dependencies
+**/node_modules/
+
+# Environment — NEVER commit real keys
+**/.env
+!**/.env.example
+
+# Expo
+frontend/.expo/
+frontend/dist/
+frontend/web-build/
+
+# Native build output
+frontend/android/
+frontend/ios/
+
+# Logs
+backend/server.log
+npm-debug.*
+
+# Keys / certs
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Claude local settings
+.claude/

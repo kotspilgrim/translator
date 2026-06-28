@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Translator",
+    "slug": "translator",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#121212"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#121212"
+      },
+      "package": "com.translator.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "1.9.25"
+          }
+        }
+      ],
+      "expo-dev-client",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Приложению нужен доступ к микрофону для распознавания речи.",
+          "speechRecognitionPermission": "Приложению нужен доступ к распознаванию речи."
+        }
+      ],
+      "expo-asset"
+    ]
+  }
+}
