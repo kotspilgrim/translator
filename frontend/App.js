@@ -7,6 +7,15 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Speech from 'expo-speech';
+import { MaterialIcons } from '@expo/vector-icons';
+import { useFonts } from 'expo-font';
+
+const glyphs = MaterialIcons.getRawGlyphMap();
+const MI = ({ name, size, color, style }) => (
+  <Text style={[{ fontFamily: 'MaterialIcons', fontSize: size, color }, style]}>
+    {String.fromCodePoint(glyphs[name])}
+  </Text>
+);
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -47,7 +56,7 @@ function HistoryScreen({ history, onBack }) {
       <StatusBar style="light" />
       <View style={S.histHead}>
         <TouchableOpacity onPress={onBack} style={S.backBtn}>
-          <Text style={S.backTxt}>←</Text>
+          <MI name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
         <Text style={S.histTitle}>История (24 ч)</Text>
       </View>
@@ -66,7 +75,7 @@ function HistoryScreen({ history, onBack }) {
               <View style={[S.chatWrap, isRu ? S.chatRight : S.chatLeft]}>
                 <View style={[S.chatBub, isRu ? S.chatBubRu : S.chatBubKo]}>
                   <Text style={S.chatOrig}>{item.originalText}</Text>
-                  <Text style={S.chatSep}>↓</Text>
+                  <MI name="south" size={14} color="rgba(255,255,255,0.35)" style={S.chatSep} />
                   <Text style={S.chatTrans}>{item.translatedText}</Text>
                   <Text style={S.chatTime}>{fmtTime(item.timestamp)}</Text>
                 </View>
@@ -81,6 +90,15 @@ function HistoryScreen({ history, onBack }) {
 
 // ── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
+  const [fontsLoaded, fontError] = useFonts({
+    MaterialIcons: require('@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/MaterialIcons.ttf'),
+  });
+
+  useEffect(() => {
+    if (fontError) console.error('FONT ERROR:', fontError);
+    if (fontsLoaded) console.log('FONT OK');
+  }, [fontsLoaded, fontError]);
+
   const [screen,     setScreen]     = useState('main');
   const [scenarios,  setScenarios]  = useState(DEFAULT_SCENARIOS);
   const [scenario,   setScenario]   = useState('Незнакомец на улице');
@@ -339,12 +357,14 @@ export default function App() {
             onPress={() => handleMic('ko')}
             disabled={translating}
           >
-            <Text style={[S.micIcon, koRotated && S.micIconFlipped]}>
-              {micRecording('ko') ? '⏹' : '🎤'}
-            </Text>
+            <MI
+              name={micRecording('ko') ? 'stop' : 'mic'}
+              size={26} color="#e6e6e6"
+              style={koRotated && S.micIconFlipped}
+            />
           </TouchableOpacity>
           <TouchableOpacity style={S.flipBtn} onPress={() => setKoRotated(r => !r)}>
-            <Text style={S.flipIcon}>🔄</Text>
+            <MI name="screen-rotation" size={20} color="#cfcfcf" />
           </TouchableOpacity>
         </View>
 
@@ -373,7 +393,7 @@ export default function App() {
             onPress={() => setKoText('')}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Text style={S.clearTxt}>✕</Text>
+            <MI name="close" size={16} color="#666" />
           </TouchableOpacity>
           {/* TTS — top-left in rotated space */}
           <TouchableOpacity
@@ -382,7 +402,7 @@ export default function App() {
             disabled={!koText}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Text style={S.ttsTxt}>🔊</Text>
+            <MI name="volume-up" size={16} color="#cfcfcf" />
           </TouchableOpacity>
         </TouchableOpacity>
 
@@ -390,10 +410,10 @@ export default function App() {
         <View style={S.gutter}>
           <TouchableOpacity style={S.scenBtn} onPress={() => setShowPicker(true)}>
             <Text style={S.scenTxt} numberOfLines={1}>{scenario}</Text>
-            <Text style={S.scenChev}>▾</Text>
+            <MI name="expand-more" size={20} color="#666" />
           </TouchableOpacity>
           <TouchableOpacity style={S.histBtn} onPress={() => setScreen('history')}>
-            <Text style={S.histBtnTxt}>💬</Text>
+            <MI name="history" size={20} color="#cfcfcf" />
           </TouchableOpacity>
         </View>
 
@@ -438,7 +458,7 @@ export default function App() {
             onPress={() => setRuText('')}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Text style={S.clearTxt}>✕</Text>
+            <MI name="close" size={16} color="#666" />
           </TouchableOpacity>
           {/* TTS */}
           <TouchableOpacity
@@ -447,7 +467,7 @@ export default function App() {
             disabled={!ruText}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Text style={S.ttsTxt}>🔊</Text>
+            <MI name="volume-up" size={16} color="#cfcfcf" />
           </TouchableOpacity>
         </TouchableOpacity>
 
@@ -458,7 +478,7 @@ export default function App() {
             onPress={() => handleMic('ru')}
             disabled={translating}
           >
-            <Text style={S.micIcon}>{micRecording('ru') ? '⏹' : '🎤'}</Text>
+            <MI name={micRecording('ru') ? 'stop' : 'mic'} size={26} color="#e6e6e6" />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -513,7 +533,7 @@ export default function App() {
                 onPress={() => { setShowPicker(false); setShowAdd(false); setAddText(''); }}
                 hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
               >
-                <Text style={S.sheetCloseTxt}>✕</Text>
+                <MI name="close" size={22} color="#777" />
               </TouchableOpacity>
             </View>
 
@@ -533,7 +553,7 @@ export default function App() {
                     hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
                     style={S.sheetDelBtn}
                   >
-                    <Text style={S.sheetDelTxt}>🗑</Text>
+                    <MI name="delete" size={20} color="#8a8a8a" />
                   </TouchableOpacity>
                 </View>
               ))}
@@ -560,7 +580,8 @@ export default function App() {
               </View>
             ) : (
               <TouchableOpacity style={S.addBtn} onPress={() => setShowAdd(true)}>
-                <Text style={S.addBtnTxt}>+ Добавить сценарий</Text>
+                <MI name="add" size={20} color="#666" />
+                <Text style={S.addBtnTxt}>Добавить сценарий</Text>
               </TouchableOpacity>
             )}
           </View>

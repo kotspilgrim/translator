@@ -38,7 +38,13 @@
           "speechRecognitionPermission": "Приложению нужен доступ к распознаванию речи."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-font",
+        {
+          "fonts": ["./node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/MaterialIcons.ttf"]
+        }
+      ]
     ]
   }
 }
