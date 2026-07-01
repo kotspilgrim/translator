@@ -7,6 +7,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Speech from 'expo-speech';
+import { MaterialIcons } from '@expo/vector-icons';
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -47,7 +48,7 @@ function HistoryScreen({ history, onBack }) {
       <StatusBar style="light" />
       <View style={S.histHead}>
         <TouchableOpacity onPress={onBack} style={S.backBtn}>
-          <Text style={S.backTxt}>←</Text>
+          <MaterialIcons name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
         <Text style={S.histTitle}>История (24 ч)</Text>
       </View>
@@ -66,7 +67,7 @@ function HistoryScreen({ history, onBack }) {
               <View style={[S.chatWrap, isRu ? S.chatRight : S.chatLeft]}>
                 <View style={[S.chatBub, isRu ? S.chatBubRu : S.chatBubKo]}>
                   <Text style={S.chatOrig}>{item.originalText}</Text>
-                  <Text style={S.chatSep}>↓</Text>
+                  <MaterialIcons name="south" size={14} color="rgba(255,255,255,0.35)" style={S.chatSep} />
                   <Text style={S.chatTrans}>{item.translatedText}</Text>
                   <Text style={S.chatTime}>{fmtTime(item.timestamp)}</Text>
                 </View>
@@ -339,12 +340,14 @@ export default function App() {
             onPress={() => handleMic('ko')}
             disabled={translating}
           >
-            <Text style={[S.micIcon, koRotated && S.micIconFlipped]}>
-              {micRecording('ko') ? '⏹' : '🎤'}
-            </Text>
+            <MaterialIcons
+              name={micRecording('ko') ? 'stop' : 'mic'}
+              size={26} color="#e6e6e6"
+              style={koRotated && S.micIconFlipped}
+            />
           </TouchableOpacity>
           <TouchableOpacity style={S.flipBtn} onPress={() => setKoRotated(r => !r)}>
-            <Text style={S.flipIcon}>🔄</Text>
+            <MaterialIcons name="screen-rotation" size={20} color="#cfcfcf" />
           </TouchableOpacity>
         </View>
 
@@ -367,22 +370,22 @@ export default function App() {
               <Text style={S.bubblePh}>{koPlaceholder}</Text>
             )}
           </View>
-          {/* ✕ clear — top-right in rotated space */}
+          {/* clear — top-right in rotated space */}
           <TouchableOpacity
             style={S.clearBtn}
             onPress={() => setKoText('')}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Text style={S.clearTxt}>✕</Text>
+            <MaterialIcons name="close" size={16} color="#666" />
           </TouchableOpacity>
-          {/* 🔊 TTS — top-left in rotated space */}
+          {/* TTS — top-left in rotated space */}
           <TouchableOpacity
             style={[S.ttsBtn, !koText && S.ttsBtnDim]}
             onPress={() => handleSpeak(koText, 'ko-KR')}
             disabled={!koText}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Text style={S.ttsTxt}>🔊</Text>
+            <MaterialIcons name="volume-up" size={16} color="#cfcfcf" />
           </TouchableOpacity>
         </TouchableOpacity>
 
@@ -390,10 +393,10 @@ export default function App() {
         <View style={S.gutter}>
           <TouchableOpacity style={S.scenBtn} onPress={() => setShowPicker(true)}>
             <Text style={S.scenTxt} numberOfLines={1}>{scenario}</Text>
-            <Text style={S.scenChev}>▾</Text>
+            <MaterialIcons name="expand-more" size={20} color="#666" />
           </TouchableOpacity>
           <TouchableOpacity style={S.histBtn} onPress={() => setScreen('history')}>
-            <Text style={S.histBtnTxt}>💬</Text>
+            <MaterialIcons name="history" size={20} color="#cfcfcf" />
           </TouchableOpacity>
         </View>
 
@@ -432,22 +435,22 @@ export default function App() {
               <Text style={S.bubblePh}>{ruPlaceholder}</Text>
             )}
           </View>
-          {/* ✕ clear */}
+          {/* clear */}
           <TouchableOpacity
             style={S.clearBtn}
             onPress={() => setRuText('')}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Text style={S.clearTxt}>✕</Text>
+            <MaterialIcons name="close" size={16} color="#666" />
           </TouchableOpacity>
-          {/* 🔊 TTS */}
+          {/* TTS */}
           <TouchableOpacity
             style={[S.ttsBtn, !ruText && S.ttsBtnDim]}
             onPress={() => handleSpeak(ruText, 'ru-RU')}
             disabled={!ruText}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Text style={S.ttsTxt}>🔊</Text>
+            <MaterialIcons name="volume-up" size={16} color="#cfcfcf" />
           </TouchableOpacity>
         </TouchableOpacity>
 
@@ -458,7 +461,7 @@ export default function App() {
             onPress={() => handleMic('ru')}
             disabled={translating}
           >
-            <Text style={S.micIcon}>{micRecording('ru') ? '⏹' : '🎤'}</Text>
+            <MaterialIcons name={micRecording('ru') ? 'stop' : 'mic'} size={26} color="#e6e6e6" />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -513,7 +516,7 @@ export default function App() {
                 onPress={() => { setShowPicker(false); setShowAdd(false); setAddText(''); }}
                 hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
               >
-                <Text style={S.sheetCloseTxt}>✕</Text>
+                <MaterialIcons name="close" size={22} color="#777" />
               </TouchableOpacity>
             </View>
 
@@ -533,7 +536,7 @@ export default function App() {
                     hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
                     style={S.sheetDelBtn}
                   >
-                    <Text style={S.sheetDelTxt}>🗑</Text>
+                    <MaterialIcons name="delete" size={20} color="#8a8a8a" />
                   </TouchableOpacity>
                 </View>
               ))}
@@ -560,7 +563,8 @@ export default function App() {
               </View>
             ) : (
               <TouchableOpacity style={S.addBtn} onPress={() => setShowAdd(true)}>
-                <Text style={S.addBtnTxt}>+ Добавить сценарий</Text>
+                <MaterialIcons name="add" size={20} color="#666" />
+                <Text style={S.addBtnTxt}>Добавить сценарий</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -586,7 +590,6 @@ const S = StyleSheet.create({
     backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2e2e2e',
     justifyContent: 'center', alignItems: 'center',
   },
-  flipIcon: { fontSize: 18 },
   micBtn: {
     width: 54, height: 54, borderRadius: 27,
     backgroundColor: '#202020', borderWidth: 2, borderColor: '#2e2e2e',
@@ -594,12 +597,11 @@ const S = StyleSheet.create({
   },
   micBtnRec: { backgroundColor: '#7f1d1d', borderColor: '#ef4444' },
   micBtnDim: { opacity: 0.3 },
-  micIcon:        { fontSize: 24 },
   micIconFlipped: { transform: [{ rotate: '180deg' }] },
 
   // Bubbles
   bubble: {
-    flex: 1, marginHorizontal: 14,
+    flex: 1, marginHorizontal: 14, marginVertical: 8,
     backgroundColor: '#161616',
     borderRadius: 20, borderWidth: 2, borderColor: '#1e1e1e',
     overflow: 'hidden',
@@ -625,14 +627,12 @@ const S = StyleSheet.create({
     width: 28, height: 28, borderRadius: 14,
     backgroundColor: '#252525', justifyContent: 'center', alignItems: 'center',
   },
-  clearTxt: { color: '#555', fontSize: 13 },
   ttsBtn: {
     position: 'absolute', top: 10, left: 12,
     width: 28, height: 28, borderRadius: 14,
     backgroundColor: '#252525', justifyContent: 'center', alignItems: 'center',
   },
   ttsBtnDim: { opacity: 0.2 },
-  ttsTxt: { fontSize: 14 },
 
   // Gutter between bubbles
   gutter: {
@@ -645,13 +645,11 @@ const S = StyleSheet.create({
     borderWidth: 1, borderColor: '#252525',
     paddingHorizontal: 14, height: 38,
   },
-  scenTxt:  { color: '#bbb', fontSize: 14, flex: 1, marginRight: 6 },
-  scenChev: { color: '#555', fontSize: 12 },
+  scenTxt: { color: '#bbb', fontSize: 14, flex: 1, marginRight: 6 },
   histBtn: {
     width: 38, height: 38, borderRadius: 19,
     backgroundColor: '#1a1a1a', justifyContent: 'center', alignItems: 'center',
   },
-  histBtnTxt: { fontSize: 17 },
 
   // Korean typing overlay — appears at physical top so Korean person
   // can type without flipping the phone
@@ -684,9 +682,8 @@ const S = StyleSheet.create({
     paddingHorizontal: 16, paddingBottom: 14, paddingTop: 10,
     borderBottomWidth: 1, borderBottomColor: '#1a1a1a',
   },
-  backBtn:      { padding: 8, marginRight: 8 },
-  backTxt:      { color: '#fff', fontSize: 22 },
-  histTitle:    { color: '#fff', fontSize: 18, fontWeight: '700' },
+  backBtn:   { padding: 8, marginRight: 8 },
+  histTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
   histList:     { padding: 16, paddingBottom: 40 },
   histEmpty:    { flex: 1, justifyContent: 'center', alignItems: 'center' },
   histEmptyTxt: { color: '#444', fontSize: 16 },
@@ -697,7 +694,7 @@ const S = StyleSheet.create({
   chatBubRu:    { backgroundColor: '#5b21b6', borderBottomRightRadius: 4 },
   chatBubKo:    { backgroundColor: '#1f1f1f', borderBottomLeftRadius: 4 },
   chatOrig:     { color: '#fff', fontSize: 15, lineHeight: 22 },
-  chatSep:      { color: 'rgba(255,255,255,0.3)', fontSize: 11, marginVertical: 3 },
+  chatSep:      { marginVertical: 3 },
   chatTrans:    { color: 'rgba(255,255,255,0.65)', fontSize: 13, lineHeight: 19, fontStyle: 'italic' },
   chatTime:     { color: 'rgba(255,255,255,0.3)', fontSize: 10, marginTop: 6, textAlign: 'right' },
 
@@ -712,7 +709,6 @@ const S = StyleSheet.create({
     paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#2a2a2a', marginBottom: 8,
   },
   sheetTitle:    { color: '#888', fontSize: 13, textTransform: 'uppercase', letterSpacing: 1.2 },
-  sheetCloseTxt: { color: '#666', fontSize: 20 },
   sheetList:     { maxHeight: 320 },
   sheetItem: {
     flexDirection: 'row', alignItems: 'center',
@@ -723,12 +719,12 @@ const S = StyleSheet.create({
   sheetItemTxt:   { color: '#aaa', fontSize: 17 },
   sheetItemTxtOn: { color: '#fff', fontWeight: '600' },
   sheetDelBtn:    { padding: 8 },
-  sheetDelTxt:    { fontSize: 16 },
   addBtn: {
-    marginTop: 12, paddingVertical: 14, alignItems: 'center',
+    marginTop: 12, paddingVertical: 14,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     borderRadius: 12, borderWidth: 1, borderColor: '#2a2a2a', borderStyle: 'dashed',
   },
-  addBtnTxt: { color: '#555', fontSize: 16 },
+  addBtnTxt: { color: '#666', fontSize: 16 },
   addRow:    { flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 8 },
   addInput: {
     flex: 1, backgroundColor: '#252525', borderRadius: 12,
