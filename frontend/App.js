@@ -90,6 +90,8 @@ export default function App() {
   const [history,    setHistory]    = useState([]);
   const histRef = useRef([]);
 
+  const [koRotated, setKoRotated] = useState(true);
+
   // null = neither selected; 'ru' | 'ko' = that side active
   const [activeBubble,  setActiveBubble]  = useState(null);
   const activeBubbleRef = useRef(null);
@@ -337,15 +339,18 @@ export default function App() {
             onPress={() => handleMic('ko')}
             disabled={translating}
           >
-            <Text style={[S.micIcon, S.micIconFlipped]}>
+            <Text style={[S.micIcon, koRotated && S.micIconFlipped]}>
               {micRecording('ko') ? '⏹' : '🎤'}
             </Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={S.flipBtn} onPress={() => setKoRotated(r => !r)}>
+            <Text style={S.flipIcon}>🔄</Text>
           </TouchableOpacity>
         </View>
 
         {/* ── Korean bubble (rotated 180° for face-to-face) ── */}
         <TouchableOpacity
-          style={[S.bubble, S.bubbleKo, activeBubble === 'ko' && S.bubbleActive]}
+          style={[S.bubble, koRotated && S.bubbleKo, activeBubble === 'ko' && S.bubbleActive]}
           onPress={() => handleBubbleTap('ko')}
           activeOpacity={0.95}
         >
@@ -571,8 +576,17 @@ const S = StyleSheet.create({
   kav:  { flex: 1, paddingTop: 48, paddingBottom: 12 },
 
   // Mic rows
-  koMicRow: { height: 58, justifyContent: 'center', alignItems: 'center' },
+  koMicRow: { height: 58, justifyContent: 'center', alignItems: 'center', position: 'relative' },
   ruMicRow: { height: 58, justifyContent: 'center', alignItems: 'center' },
+
+  // Flip button
+  flipBtn: {
+    position: 'absolute', right: 14,
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2e2e2e',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  flipIcon: { fontSize: 18 },
   micBtn: {
     width: 54, height: 54, borderRadius: 27,
     backgroundColor: '#202020', borderWidth: 2, borderColor: '#2e2e2e',
