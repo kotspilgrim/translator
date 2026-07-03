@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, ActivityIndicator,
   ScrollView, FlatList, Modal, TextInput, Keyboard,
@@ -34,6 +34,7 @@ import {
 const BACKEND_URL   = 'http://100.68.162.96:3000';
 const HISTORY_KEY   = 'translation_history';
 const PINNED_KEY    = 'translator_pinned_scenarios';
+const THEME_KEY     = 'translator_theme';
 const HISTORY_TTL   = 24 * 60 * 60 * 1000;
 const SILENCE_MS    = 7000;
 const MAX_PINNED    = 3;
@@ -61,8 +62,145 @@ const fmtTime = ts => {
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 };
 
+// ── Theme ────────────────────────────────────────────────────────────────────
+// Two full palettes (dark = the app's original look, unchanged; light = the
+// "Translator Current.dc.html" design). Every color used anywhere in the app
+// is a named token here — components read `c.tokenName`, never a literal hex.
+const COLORS = {
+  dark: {
+    statusBarStyle: 'light',
+    bg: '#0f0f0f',
+
+    ctrlBg: '#1a1a1a', ctrlBorder: '#2e2e2e',
+    iconMid: '#cfcfcf', iconDim: '#666',
+
+    scrimLight: 'rgba(0,0,0,0.6)',
+
+    micBg: '#202020', micBorder: '#2e2e2e', micIcon: '#e6e6e6',
+    micRecBg: '#7f1d1d', micRecBorder: '#ef4444', micRecIcon: '#e6e6e6',
+    micDimOpacity: 0.3,
+
+    testBorder: '#2e2e2e', testIconIdle: '#9fb8c4',
+    testOk: '#4ade80', testBad: '#f87171', testChecking: '#4fc3f7',
+    pillBg: '#1e1e1e', pillBorder: '#2e2e2e', pillText: '#9a9a9a',
+
+    bubbleBg: '#161616', bubbleBorder: '#1e1e1e', bubbleBorderActive: '#ffffff',
+    textStrong: '#ffffff', textPlaceholder: '#2a2a2a', textWaitPlaceholder: '#3a3a3a',
+    bubbleInputPh: '#333', chipInsetBg: '#252525', ttsDimOpacity: 0.2,
+
+    scenBg: '#1a1a1a', scenBorder: '#252525', scenText: '#bbb',
+
+    koPanelBg: '#161616', koPanelHint: '#444', koPanelPh: '#444', koCursor: '#4fc3f7',
+
+    histHeaderBorder: '#1a1a1a', histTitle: '#ffffff',
+    histChipBg: '#1a1a1a', histChipBorder: '#242424', histChipText: '#e8d9ad',
+    histDropBg: '#1e1e1e', histDropBorder: '#2a2a2a', histOptText: '#b0b0b0', histOptActiveBg: '#262626',
+    histEmptyText: '#444',
+
+    pinAccent: '#f0b429',
+
+    chatRuBg: '#5b21b6', chatRuText: '#ffffff',
+    chatRuSep: 'rgba(255,255,255,0.3)', chatRuTrans: 'rgba(255,255,255,0.65)', chatRuTime: 'rgba(255,255,255,0.3)',
+    chatKoBg: '#1f1f1f', chatKoBorder: 'transparent', chatKoText: '#ffffff',
+    chatKoSep: 'rgba(255,255,255,0.3)', chatKoTrans: 'rgba(255,255,255,0.65)', chatKoTime: 'rgba(255,255,255,0.3)',
+
+    menuDrawerBg: '#161616', menuDrawerBorder: '#242424', menuBrand: '#ffffff', menuSub: '#555',
+    menuIcon: '#8f8f8f', menuText: '#c9c9c9', menuDivider: '#242424', themeToggleIcon: '#f0b429',
+
+    sheetBg: '#191919', sheetHeadBorder: '#2a2a2a', sheetTitle: '#888', sheetClose: '#777',
+    sheetSectionPlain: '#666',
+    sheetItemOnBg: '#252525',
+    sheetItemText: '#aaa', sheetItemTextOn: '#ffffff',
+    pinOff: '#5a5a5a', editIcon: '#7d7d7d', deleteIcon: '#8a8a8a',
+    addBorder: '#2a2a2a', addText: '#555',
+
+    subHeadBorder: '#2a2a2a', subHeadTitle: '#ffffff', backIcon: '#ccc',
+    fieldLbl: '#666', fieldBg: '#232323', fieldBorder: '#333',
+    fieldNameText: '#ffffff', fieldPromptText: '#e0e0e0', fieldPh: '#555',
+    fieldError: '#f87171',
+    btnNeutralBg: '#232323', btnNeutralBorder: '#333', btnNeutralText: '#9a9a9a',
+    btnSaveBg: '#1a4020', btnSaveBorder: '#2a5c34', btnSaveText: '#4ade80',
+    btnDangerBg: '#3a1414', btnDangerBorder: '#5c2323', btnDangerText: '#f87171',
+
+    confirmScrim: 'rgba(0,0,0,0.65)', confirmBg: '#1e1e1e', confirmBorder: '#2e2e2e',
+    confirmTitle: '#ffffff', confirmText: '#9a9a9a',
+
+    koBackdrop: 'rgba(0,0,0,0.65)',
+  },
+  light: {
+    statusBarStyle: 'dark',
+    bg: '#f4f4f7',
+
+    ctrlBg: '#ffffff', ctrlBorder: '#e2e2e8',
+    iconMid: '#555', iconDim: '#999',
+
+    scrimLight: 'rgba(0,0,0,0.3)',
+
+    micBg: '#ffffff', micBorder: '#e2e2e8', micIcon: '#333',
+    micRecBg: '#fdecec', micRecBorder: '#ef4444', micRecIcon: '#dc2626',
+    micDimOpacity: 0.3,
+
+    testBorder: '#d0d0d8', testIconIdle: '#6a8794',
+    testOk: '#16a34a', testBad: '#dc2626', testChecking: '#2563eb',
+    pillBg: '#ffffff', pillBorder: '#e2e2e8', pillText: '#666',
+
+    bubbleBg: '#ffffff', bubbleBorder: '#e5e5ea', bubbleBorderActive: '#111111',
+    textStrong: '#111111', textPlaceholder: '#c2c2c8', textWaitPlaceholder: '#9a9aa2',
+    bubbleInputPh: '#bbb', chipInsetBg: '#ececf0', ttsDimOpacity: 0.35,
+
+    scenBg: '#ffffff', scenBorder: '#e2e2e8', scenText: '#333',
+
+    koPanelBg: '#ffffff', koPanelHint: '#999', koPanelPh: '#ccc', koCursor: '#2563eb',
+
+    histHeaderBorder: '#e5e5ea', histTitle: '#111111',
+    histChipBg: '#ffffff', histChipBorder: '#e5e5ea', histChipText: '#8a6d1e',
+    histDropBg: '#ffffff', histDropBorder: '#e5e5ea', histOptText: '#555', histOptActiveBg: '#ececf0',
+    histEmptyText: '#999',
+
+    pinAccent: '#e0a000',
+
+    chatRuBg: '#6d28d9', chatRuText: '#ffffff',
+    chatRuSep: 'rgba(255,255,255,0.4)', chatRuTrans: 'rgba(255,255,255,0.7)', chatRuTime: 'rgba(255,255,255,0.4)',
+    chatKoBg: '#ffffff', chatKoBorder: '#e8e8ee', chatKoText: '#222222',
+    chatKoSep: '#bbbbbb', chatKoTrans: '#777777', chatKoTime: '#aaaaaa',
+
+    menuDrawerBg: '#ffffff', menuDrawerBorder: '#e5e5ea', menuBrand: '#111111', menuSub: '#aaa',
+    menuIcon: '#888', menuText: '#333', menuDivider: '#eeeeee', themeToggleIcon: '#6d28d9',
+
+    sheetBg: '#ffffff', sheetHeadBorder: '#eeeeee', sheetTitle: '#999', sheetClose: '#999',
+    sheetSectionPlain: '#aaa',
+    sheetItemOnBg: '#f0edfa',
+    sheetItemText: '#333', sheetItemTextOn: '#111111',
+    pinOff: '#c8c8ce', editIcon: '#999', deleteIcon: '#b0453f',
+    addBorder: '#d5d5db', addText: '#999',
+
+    subHeadBorder: '#eeeeee', subHeadTitle: '#111111', backIcon: '#555',
+    fieldLbl: '#999', fieldBg: '#f4f4f6', fieldBorder: '#e2e2e8',
+    fieldNameText: '#111111', fieldPromptText: '#333333', fieldPh: '#aaa',
+    fieldError: '#d33333',
+    btnNeutralBg: '#ececf0', btnNeutralBorder: '#e2e2e8', btnNeutralText: '#555',
+    btnSaveBg: '#e4f7ea', btnSaveBorder: '#34a853', btnSaveText: '#1a7f37',
+    btnDangerBg: '#fdecec', btnDangerBorder: '#ef4444', btnDangerText: '#d33333',
+
+    confirmScrim: 'rgba(0,0,0,0.3)', confirmBg: '#ffffff', confirmBorder: '#e5e5ea',
+    confirmTitle: '#111111', confirmText: '#666',
+
+    koBackdrop: 'rgba(0,0,0,0.3)',
+  },
+};
+
+// Light theme gets subtle card shadows (matches the design's white-on-light-grey
+// surfaces); dark theme stays flat-on-black exactly as before.
+const SHADOW_SM = { elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3 };
+const SHADOW_MD = { elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 8 };
+const SHADOW_LG = { elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.16, shadowRadius: 24 };
+const shadow = (theme, preset) => (theme === 'light' ? preset : null);
+
 // ── History screen ───────────────────────────────────────────────────────────
-function HistoryScreen({ history, scenarios, initialScenarioId, onBack }) {
+function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme }) {
+  const c = COLORS[theme];
+  const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+
   const [viewId,   setViewId]   = useState(initialScenarioId);
   const [showDrop, setShowDrop] = useState(false);
 
@@ -71,18 +209,18 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack }) {
 
   return (
     <View style={S.histCont}>
-      <StatusBar style="light" />
+      <StatusBar style={c.statusBarStyle} />
       <View style={S.histHead}>
         <TouchableOpacity onPress={onBack} style={S.backBtn}>
-          <MI name="arrow-back" size={24} color="#fff" />
+          <MI name="arrow-back" size={24} color={c.textStrong} />
         </TouchableOpacity>
         <Text style={S.histTitle}>История</Text>
       </View>
 
       <TouchableOpacity style={S.histScenChip} onPress={() => setShowDrop(v => !v)}>
-        <MI name="push-pin" size={13} color="#f0b429" />
+        <MI name="push-pin" size={13} color={c.pinAccent} />
         <Text style={S.histScenChipTxt} numberOfLines={1}>{viewName}</Text>
-        <MI name="expand-more" size={16} color="#8a8a8a" />
+        <MI name="expand-more" size={16} color={c.iconDim} />
       </TouchableOpacity>
 
       {showDrop && (
@@ -114,13 +252,18 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack }) {
           contentContainerStyle={S.histList}
           renderItem={({ item }) => {
             const isRu = item.direction === 'ru-ko';
+            const bubStyle  = isRu ? S.chatBubRu : S.chatBubKo;
+            const textColor = isRu ? c.chatRuText  : c.chatKoText;
+            const sepColor  = isRu ? c.chatRuSep   : c.chatKoSep;
+            const transColor= isRu ? c.chatRuTrans : c.chatKoTrans;
+            const timeColor = isRu ? c.chatRuTime  : c.chatKoTime;
             return (
               <View style={[S.chatWrap, isRu ? S.chatRight : S.chatLeft]}>
-                <View style={[S.chatBub, isRu ? S.chatBubRu : S.chatBubKo]}>
-                  <Text style={S.chatOrig}>{item.originalText}</Text>
-                  <MI name="south" size={14} color="rgba(255,255,255,0.35)" style={S.chatSep} />
-                  <Text style={S.chatTrans}>{item.translatedText}</Text>
-                  <Text style={S.chatTime}>{fmtTime(item.timestamp)}</Text>
+                <View style={[S.chatBub, bubStyle]}>
+                  <Text style={[S.chatOrig, { color: textColor }]}>{item.originalText}</Text>
+                  <MI name="south" size={14} color={sepColor} style={S.chatSep} />
+                  <Text style={[S.chatTrans, { color: transColor }]}>{item.translatedText}</Text>
+                  <Text style={[S.chatTime, { color: timeColor }]}>{fmtTime(item.timestamp)}</Text>
                 </View>
               </View>
             );
@@ -144,6 +287,26 @@ export default function App() {
 
   const [screen,     setScreen]     = useState('main');
   const [showMenu,   setShowMenu]   = useState(false);
+
+  // ── Theme ───────────────────────────────────────────────────────────────────
+  const [theme, setTheme] = useState('dark');
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem(THEME_KEY);
+        if (saved === 'light' || saved === 'dark') setTheme(saved);
+      } catch {}
+    })();
+  }, []);
+  const toggleTheme = () => {
+    setTheme(prev => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      AsyncStorage.setItem(THEME_KEY, next).catch(() => {});
+      return next;
+    });
+  };
+  const c = COLORS[theme];
+  const S = useMemo(() => makeStyles(c, theme), [c, theme]);
 
   // ── Scenarios (source of truth: backend) ───────────────────────────────────
   const [scenarios,   setScenarios]   = useState(FALLBACK_SCENARIOS);
@@ -411,13 +574,13 @@ export default function App() {
   const restScenarios   = scenarios.filter(s => !pinnedIds.includes(s.id));
 
   const renderScenarioRow = (s, isPinned) => (
-    <View key={s.id} style={[S.sheetItem, scenarioId === s.id && S.sheetItemOn, isPinned && S.sheetItemPinned]}>
+    <View key={s.id} style={[S.sheetItem, scenarioId === s.id && S.sheetItemOn]}>
       <TouchableOpacity
         style={S.pinIconBtn}
         onPress={() => togglePin(s.id)}
         hitSlop={{ top: 8, right: 4, bottom: 8, left: 8 }}
       >
-        <MI name="push-pin" size={16} color={isPinned ? '#f0b429' : '#5a5a5a'} />
+        <MI name="push-pin" size={16} color={isPinned ? c.pinAccent : c.pinOff} />
       </TouchableOpacity>
       <TouchableOpacity
         style={S.sheetItemLabel}
@@ -432,7 +595,7 @@ export default function App() {
         onPress={() => openEdit(s)}
         hitSlop={{ top: 8, right: 4, bottom: 8, left: 4 }}
       >
-        <MI name="edit" size={17} color="#7d7d7d" />
+        <MI name="edit" size={17} color={c.editIcon} />
       </TouchableOpacity>
       {!s.builtIn && (
         <TouchableOpacity
@@ -440,7 +603,7 @@ export default function App() {
           onPress={() => setDeleteTarget({ id: s.id, name: s.name })}
           hitSlop={{ top: 8, right: 8, bottom: 8, left: 4 }}
         >
-          <MI name="delete" size={18} color="#8a8a8a" />
+          <MI name="delete" size={18} color={c.deleteIcon} />
         </TouchableOpacity>
       )}
     </View>
@@ -602,6 +765,7 @@ export default function App() {
         scenarios={scenarios}
         initialScenarioId={scenarioId}
         onBack={() => setScreen('main')}
+        theme={theme}
       />
     );
   }
@@ -609,7 +773,7 @@ export default function App() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <View style={S.root}>
-      <StatusBar style="light" />
+      <StatusBar style={c.statusBarStyle} />
 
       <KeyboardAvoidingView
         style={S.kav}
@@ -624,12 +788,12 @@ export default function App() {
           >
             <AnimatedMI
               name={micRecording('ko') ? 'stop' : 'mic'}
-              size={26} color="#e6e6e6"
+              size={26} color={micRecording('ko') ? c.micRecIcon : c.micIcon}
               style={{ transform: [{ rotate: koFlipIconRotate }] }}
             />
           </TouchableOpacity>
           <TouchableOpacity style={S.flipBtn} onPress={() => setKoRotated(r => !r)}>
-            <MI name="screen-rotation" size={20} color="#cfcfcf" />
+            <MI name="screen-rotation" size={20} color={c.iconMid} />
           </TouchableOpacity>
         </View>
 
@@ -646,7 +810,7 @@ export default function App() {
         >
           <View style={S.bubbleBody}>
             {translating && activeBubble === 'ru' ? (
-              <ActivityIndicator color="#4fc3f7" size="large" />
+              <ActivityIndicator color={c.testChecking} size="large" />
             ) : koShowWait ? (
               <Text style={S.bubbleWaitPh}>{PH_KO_WAIT}</Text>
             ) : koText ? (
@@ -663,7 +827,7 @@ export default function App() {
             onPress={() => setKoText('')}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <MI name="close" size={16} color="#666" />
+            <MI name="close" size={16} color={c.iconDim} />
           </TouchableOpacity>
           {/* TTS — top-left in rotated space */}
           <TouchableOpacity
@@ -672,7 +836,7 @@ export default function App() {
             disabled={!koText}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <MI name="volume-up" size={16} color="#cfcfcf" />
+            <MI name="volume-up" size={16} color={c.iconMid} />
           </TouchableOpacity>
         </AnimatedTouchable>
 
@@ -680,10 +844,10 @@ export default function App() {
         <View style={S.gutter}>
           <TouchableOpacity style={S.scenBtn} onPress={() => setShowPicker(true)}>
             <Text style={S.scenTxt} numberOfLines={1}>{scenario}</Text>
-            <MI name="expand-more" size={20} color="#666" />
+            <MI name="expand-more" size={20} color={c.iconDim} />
           </TouchableOpacity>
           <TouchableOpacity style={S.histBtn} onPress={() => setScreen('history')}>
-            <MI name="history" size={20} color="#cfcfcf" />
+            <MI name="history" size={20} color={c.iconMid} />
           </TouchableOpacity>
         </View>
 
@@ -695,7 +859,7 @@ export default function App() {
         >
           <View style={S.bubbleBody}>
             {translating && activeBubble === 'ko' ? (
-              <ActivityIndicator color="#4fc3f7" size="large" />
+              <ActivityIndicator color={c.testChecking} size="large" />
             ) : ruShowWait ? (
               <Text style={S.bubbleWaitPh}>{PH_RU_WAIT}</Text>
             ) : typingBubble === 'ru' ? (
@@ -710,7 +874,7 @@ export default function App() {
                 onBlur={closeTypingMode}
                 style={S.bubbleInput}
                 placeholder={ruPlaceholder}
-                placeholderTextColor="#333"
+                placeholderTextColor={c.bubbleInputPh}
                 textAlignVertical="center"
                 textAlign="center"
               />
@@ -728,7 +892,7 @@ export default function App() {
             onPress={() => setRuText('')}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <MI name="close" size={16} color="#666" />
+            <MI name="close" size={16} color={c.iconDim} />
           </TouchableOpacity>
           {/* TTS */}
           <TouchableOpacity
@@ -737,7 +901,7 @@ export default function App() {
             disabled={!ruText}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <MI name="volume-up" size={16} color="#cfcfcf" />
+            <MI name="volume-up" size={16} color={c.iconMid} />
           </TouchableOpacity>
         </TouchableOpacity>
 
@@ -748,7 +912,10 @@ export default function App() {
             onPress={() => handleMic('ru')}
             disabled={translating}
           >
-            <MI name={micRecording('ru') ? 'stop' : 'mic'} size={26} color="#e6e6e6" />
+            <MI
+              name={micRecording('ru') ? 'stop' : 'mic'}
+              size={26} color={micRecording('ru') ? c.micRecIcon : c.micIcon}
+            />
           </TouchableOpacity>
 
           {/* Test connection — kept in the corner, away from the mic, so it can't be hit by accident */}
@@ -766,18 +933,21 @@ export default function App() {
               name="network-check"
               size={16}
               color={
-                connStatus === 'ok'       ? '#4ade80' :
-                connStatus === 'bad'      ? '#f87171' :
-                connStatus === 'checking' ? '#4fc3f7' : '#9fb8c4'
+                connStatus === 'ok'       ? c.testOk :
+                connStatus === 'bad'      ? c.testBad :
+                connStatus === 'checking' ? c.testChecking : c.testIconIdle
               }
             />
             {connStatus !== 'idle' && (
               <View style={S.testPill}>
-                <Text style={[
-                  S.testPillTxt,
-                  connStatus === 'ok'  && S.testPillOk,
-                  connStatus === 'bad' && S.testPillBad,
-                ]}>
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    S.testPillTxt,
+                    connStatus === 'ok'  && S.testPillOk,
+                    connStatus === 'bad' && S.testPillBad,
+                  ]}
+                >
                   {connMsg}
                 </Text>
               </View>
@@ -788,7 +958,7 @@ export default function App() {
 
       {/* ── Menu button — physical top-left corner ── */}
       <TouchableOpacity style={S.menuBtn} onPress={() => setShowMenu(true)}>
-        <MI name="menu" size={20} color="#cfcfcf" />
+        <MI name="menu" size={20} color={c.iconMid} />
       </TouchableOpacity>
 
       {/* ── Menu drawer ──────────────────────────────────────────────────────── */}
@@ -803,16 +973,20 @@ export default function App() {
             <Text style={S.menuSub}>{BACKEND_URL.replace('http://', '')}</Text>
 
             <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setShowPicker(true); }}>
-              <MI name="list" size={20} color="#8f8f8f" />
+              <MI name="list" size={20} color={c.menuIcon} />
               <Text style={S.menuItemTxt}>Сценарии</Text>
             </TouchableOpacity>
             <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setScreen('history'); }}>
-              <MI name="history" size={20} color="#8f8f8f" />
+              <MI name="history" size={20} color={c.menuIcon} />
               <Text style={S.menuItemTxt}>История</Text>
             </TouchableOpacity>
             <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); testConnection(); }}>
-              <MI name="network-check" size={20} color="#8f8f8f" />
+              <MI name="network-check" size={20} color={c.menuIcon} />
               <Text style={S.menuItemTxt}>Проверить связь</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[S.menuItem, S.menuItemDivider]} onPress={() => { setShowMenu(false); toggleTheme(); }}>
+              <MI name={theme === 'dark' ? 'light-mode' : 'dark-mode'} size={20} color={c.themeToggleIcon} />
+              <Text style={S.menuItemTxt}>{theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -841,7 +1015,7 @@ export default function App() {
               onSubmitEditing={handleKoSubmit}
               style={S.koPanelInput}
               placeholder="텍스트를 입력하세요..."
-              placeholderTextColor="#444"
+              placeholderTextColor={c.koPanelPh}
               textAlignVertical="center"
               textAlign="center"
             />
@@ -864,7 +1038,7 @@ export default function App() {
                 <View style={S.sheetHead}>
                   <Text style={S.sheetTitle}>Сценарий</Text>
                   <TouchableOpacity onPress={closePicker} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-                    <MI name="close" size={22} color="#777" />
+                    <MI name="close" size={22} color={c.sheetClose} />
                   </TouchableOpacity>
                 </View>
 
@@ -872,8 +1046,8 @@ export default function App() {
                   {pinnedScenarios.length > 0 && (
                     <>
                       <View style={S.sheetSectionLbl}>
-                        <MI name="push-pin" size={12} color="#f0b429" />
-                        <Text style={S.sheetSectionLblTxt}>Закреплено ({pinnedScenarios.length}/{MAX_PINNED})</Text>
+                        <MI name="push-pin" size={12} color={c.pinAccent} />
+                        <Text style={[S.sheetSectionLblTxt, { color: c.pinAccent }]}>Закреплено ({pinnedScenarios.length}/{MAX_PINNED})</Text>
                       </View>
                       {pinnedScenarios.map(s => renderScenarioRow(s, true))}
                     </>
@@ -889,7 +1063,7 @@ export default function App() {
                 {pinToast && <Text style={S.pinToast}>Можно закрепить не более {MAX_PINNED}</Text>}
 
                 <TouchableOpacity style={S.addBtn} onPress={() => setSheetView('create')}>
-                  <MI name="add" size={20} color="#666" />
+                  <MI name="add" size={20} color={c.iconDim} />
                   <Text style={S.addBtnTxt}>Добавить сценарий</Text>
                 </TouchableOpacity>
               </>
@@ -899,7 +1073,7 @@ export default function App() {
               <>
                 <View style={S.subHead}>
                   <TouchableOpacity onPress={() => setSheetView('list')} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-                    <MI name="arrow-back" size={22} color="#ccc" />
+                    <MI name="arrow-back" size={22} color={c.backIcon} />
                   </TouchableOpacity>
                   <Text style={S.subHeadTitle}>Новый сценарий</Text>
                 </View>
@@ -910,7 +1084,7 @@ export default function App() {
                   value={createName}
                   onChangeText={setCreateName}
                   placeholder="Например: На рынке"
-                  placeholderTextColor="#555"
+                  placeholderTextColor={c.fieldPh}
                 />
 
                 <Text style={S.fieldLbl}>Промпт</Text>
@@ -919,7 +1093,7 @@ export default function App() {
                   value={createPrompt}
                   onChangeText={setCreatePrompt}
                   placeholder={'Опишите контекст и стиль перевода.\n{fromLang} и {toLang} подставятся автоматически.'}
-                  placeholderTextColor="#555"
+                  placeholderTextColor={c.fieldPh}
                   multiline
                   textAlignVertical="top"
                 />
@@ -932,7 +1106,7 @@ export default function App() {
                   </TouchableOpacity>
                   <TouchableOpacity style={S.btnSave} onPress={handleCreateScenario} disabled={createSaving}>
                     {createSaving
-                      ? <ActivityIndicator color="#4ade80" size="small" />
+                      ? <ActivityIndicator color={c.btnSaveText} size="small" />
                       : <Text style={S.btnSaveTxt}>Создать</Text>}
                   </TouchableOpacity>
                 </View>
@@ -943,14 +1117,14 @@ export default function App() {
               <>
                 <View style={S.subHead}>
                   <TouchableOpacity onPress={() => setSheetView('list')} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-                    <MI name="arrow-back" size={22} color="#ccc" />
+                    <MI name="arrow-back" size={22} color={c.backIcon} />
                   </TouchableOpacity>
                   <Text style={S.subHeadTitle} numberOfLines={1}>{editingScenario.name}</Text>
                 </View>
 
                 <Text style={S.fieldLbl}>Промпт</Text>
                 {editLoading ? (
-                  <ActivityIndicator color="#4fc3f7" style={{ marginVertical: 20 }} />
+                  <ActivityIndicator color={c.testChecking} style={{ marginVertical: 20 }} />
                 ) : (
                   <TextInput
                     style={[S.fieldTextarea, { minHeight: 180 }]}
@@ -958,7 +1132,7 @@ export default function App() {
                     onChangeText={setEditPrompt}
                     multiline
                     textAlignVertical="top"
-                    placeholderTextColor="#555"
+                    placeholderTextColor={c.fieldPh}
                   />
                 )}
 
@@ -970,7 +1144,7 @@ export default function App() {
                   </TouchableOpacity>
                   <TouchableOpacity style={S.btnSave} onPress={handleSaveEdit} disabled={editSaving || editLoading}>
                     {editSaving
-                      ? <ActivityIndicator color="#4ade80" size="small" />
+                      ? <ActivityIndicator color={c.btnSaveText} size="small" />
                       : <Text style={S.btnSaveTxt}>Сохранить</Text>}
                   </TouchableOpacity>
                 </View>
@@ -1004,30 +1178,36 @@ export default function App() {
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-const S = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0f0f0f' },
+// Built from the color tokens above so dark/light only ever differ in `c`.
+// Layout numbers (sizes, padding, radii) are identical in both themes.
+function makeStyles(c, theme) {
+  return StyleSheet.create({
+  root: { flex: 1, backgroundColor: c.bg },
   kav:  { flex: 1, paddingTop: 48, paddingBottom: 12 },
 
   // Menu button + drawer
   menuBtn: {
     position: 'absolute', top: 58, left: 14, zIndex: 20, elevation: 6,
     width: 36, height: 36, borderRadius: 18,
-    backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2e2e2e',
+    backgroundColor: c.ctrlBg, borderWidth: 1, borderColor: c.ctrlBorder,
     justifyContent: 'center', alignItems: 'center',
+    ...shadow(theme, SHADOW_SM),
   },
   menuScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 90, elevation: 20,
+    backgroundColor: c.scrimLight, zIndex: 90, elevation: 20,
   },
   menuDrawer: {
-    width: '74%', height: '100%', backgroundColor: '#161616',
-    borderRightWidth: 1, borderRightColor: '#242424',
+    width: '74%', height: '100%', backgroundColor: c.menuDrawerBg,
+    borderRightWidth: 1, borderRightColor: c.menuDrawerBorder,
     paddingTop: 56, paddingHorizontal: 18,
+    ...shadow(theme, SHADOW_LG),
   },
-  menuBrand: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  menuSub:   { color: '#555', fontSize: 11, marginTop: 2, marginBottom: 20 },
+  menuBrand: { color: c.menuBrand, fontSize: 16, fontWeight: '700' },
+  menuSub:   { color: c.menuSub, fontSize: 11, marginTop: 2, marginBottom: 20 },
   menuItem:  { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 13 },
-  menuItemTxt: { color: '#c9c9c9', fontSize: 15 },
+  menuItemDivider: { borderTopWidth: 1, borderTopColor: c.menuDivider, marginTop: 6 },
+  menuItemTxt: { color: c.menuText, fontSize: 15 },
 
   // Mic rows
   koMicRow: { height: 58, justifyContent: 'center', alignItems: 'center', position: 'relative' },
@@ -1037,56 +1217,64 @@ const S = StyleSheet.create({
   flipBtn: {
     position: 'absolute', right: 14,
     width: 38, height: 38, borderRadius: 19,
-    backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2e2e2e',
+    backgroundColor: c.ctrlBg, borderWidth: 1, borderColor: c.ctrlBorder,
     justifyContent: 'center', alignItems: 'center',
+    ...shadow(theme, SHADOW_SM),
   },
-  flipIcon: { fontSize: 18 },
   micBtn: {
     width: 54, height: 54, borderRadius: 27,
-    backgroundColor: '#202020', borderWidth: 2, borderColor: '#2e2e2e',
+    backgroundColor: c.micBg, borderWidth: 2, borderColor: c.micBorder,
     justifyContent: 'center', alignItems: 'center',
+    ...shadow(theme, SHADOW_SM),
   },
-  micBtnRec: { backgroundColor: '#7f1d1d', borderColor: '#ef4444' },
-  micBtnDim: { opacity: 0.3 },
-  micIcon:        { fontSize: 24 },
+  micBtnRec: { backgroundColor: c.micRecBg, borderColor: c.micRecBorder },
+  micBtnDim: { opacity: c.micDimOpacity },
 
   // Test connection button — offset into the corner so it can't be hit by accident
   testBtn: {
     position: 'absolute', right: 14,
     width: 34, height: 34, borderRadius: 17,
-    backgroundColor: '#1a1a1a', borderWidth: 1.5, borderColor: '#2e2e2e',
+    backgroundColor: c.ctrlBg, borderWidth: 1.5, borderColor: c.testBorder,
     justifyContent: 'center', alignItems: 'center',
+    ...shadow(theme, SHADOW_SM),
   },
-  testBtnOk:       { borderColor: '#4ade80' },
-  testBtnBad:      { borderColor: '#f87171' },
-  testBtnChecking: { borderColor: '#4fc3f7' },
+  testBtnOk:       { borderColor: c.testOk },
+  testBtnBad:      { borderColor: c.testBad },
+  testBtnChecking: { borderColor: c.testChecking },
   testPill: {
-    position: 'absolute', bottom: '100%', marginBottom: 6, alignSelf: 'center',
-    backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: '#2e2e2e', borderRadius: 20,
+    // Fixed width anchored to the button's right edge — an absolutely
+    // positioned pill with only `alignSelf: 'center'` and no explicit width
+    // gets measured against the 34px button and wraps the text one letter
+    // per line instead of rendering it horizontally.
+    position: 'absolute', bottom: '100%', right: 0, marginBottom: 6, width: 120,
+    alignItems: 'center',
+    backgroundColor: c.pillBg, borderWidth: 1, borderColor: c.pillBorder, borderRadius: 20,
     paddingHorizontal: 10, paddingVertical: 4,
+    ...shadow(theme, SHADOW_SM),
   },
-  testPillTxt: { fontSize: 10, color: '#9a9a9a' },
-  testPillOk:  { color: '#4ade80' },
-  testPillBad: { color: '#f87171' },
+  testPillTxt: { fontSize: 10, color: c.pillText, textAlign: 'center' },
+  testPillOk:  { color: c.testOk },
+  testPillBad: { color: c.testBad },
 
   // Bubbles
   bubble: {
     flex: 1, marginHorizontal: 14, marginVertical: 8,
-    backgroundColor: '#161616',
-    borderRadius: 20, borderWidth: 2, borderColor: '#1e1e1e',
+    backgroundColor: c.bubbleBg,
+    borderRadius: 20, borderWidth: 2, borderColor: c.bubbleBorder,
     overflow: 'hidden',
+    ...shadow(theme, SHADOW_MD),
   },
-  bubbleActive: { borderColor: '#ffffff' },
+  bubbleActive: { borderColor: c.bubbleBorderActive },
   bubbleBody: {
     flex: 1, justifyContent: 'center', alignItems: 'center', padding: 18,
   },
   bubbleScroll: { flexGrow: 1, justifyContent: 'center', alignItems: 'center' },
-  bubbleTxt: { color: '#fff', fontSize: 22, lineHeight: 34, textAlign: 'center' },
-  bubblePh:  { color: '#2a2a2a', fontSize: 15, lineHeight: 25, textAlign: 'center' },
+  bubbleTxt: { color: c.textStrong, fontSize: 22, lineHeight: 34, textAlign: 'center' },
+  bubblePh:  { color: c.textPlaceholder, fontSize: 15, lineHeight: 25, textAlign: 'center' },
   // "Waiting" placeholder is slightly more visible than normal placeholder
-  bubbleWaitPh: { color: '#3a3a3a', fontSize: 16, lineHeight: 26, textAlign: 'center' },
+  bubbleWaitPh: { color: c.textWaitPlaceholder, fontSize: 16, lineHeight: 26, textAlign: 'center' },
   bubbleInput: {
-    color: '#fff', fontSize: 20, lineHeight: 30,
+    color: c.textStrong, fontSize: 20, lineHeight: 30,
     textAlign: 'center', width: '100%', flex: 1,
   },
 
@@ -1094,16 +1282,14 @@ const S = StyleSheet.create({
   clearBtn: {
     position: 'absolute', top: 10, right: 12,
     width: 28, height: 28, borderRadius: 14,
-    backgroundColor: '#252525', justifyContent: 'center', alignItems: 'center',
+    backgroundColor: c.chipInsetBg, justifyContent: 'center', alignItems: 'center',
   },
-  clearTxt: { color: '#555', fontSize: 13 },
   ttsBtn: {
     position: 'absolute', top: 10, left: 12,
     width: 28, height: 28, borderRadius: 14,
-    backgroundColor: '#252525', justifyContent: 'center', alignItems: 'center',
+    backgroundColor: c.chipInsetBg, justifyContent: 'center', alignItems: 'center',
   },
-  ttsBtnDim: { opacity: 0.2 },
-  ttsTxt: { fontSize: 14 },
+  ttsBtnDim: { opacity: c.ttsDimOpacity },
 
   // Gutter between bubbles
   gutter: {
@@ -1112,170 +1298,173 @@ const S = StyleSheet.create({
   },
   scenBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#1a1a1a', borderRadius: 12,
-    borderWidth: 1, borderColor: '#252525',
+    backgroundColor: c.scenBg, borderRadius: 12,
+    borderWidth: 1, borderColor: c.scenBorder,
     paddingHorizontal: 14, height: 38,
+    ...shadow(theme, SHADOW_MD),
   },
-  scenTxt:  { color: '#bbb', fontSize: 14, flex: 1, marginRight: 6 },
-  scenChev: { color: '#555', fontSize: 12 },
+  scenTxt:  { color: c.scenText, fontSize: 14, flex: 1, marginRight: 6 },
   histBtn: {
     width: 38, height: 38, borderRadius: 19,
-    backgroundColor: '#1a1a1a', justifyContent: 'center', alignItems: 'center',
+    backgroundColor: c.ctrlBg, justifyContent: 'center', alignItems: 'center',
+    ...shadow(theme, SHADOW_SM),
   },
-  histBtnTxt: { fontSize: 17 },
 
   // Korean typing overlay — appears at physical top so Korean person
   // can type without flipping the phone
   koBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    backgroundColor: c.koBackdrop,
     zIndex: 100,
   },
   koPanel: {
-    backgroundColor: '#161616',
+    backgroundColor: c.koPanelBg,
     borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
     paddingTop: 56, paddingBottom: 28, paddingHorizontal: 24,
     minHeight: 190,
     justifyContent: 'flex-end',
     elevation: 12,
+    ...shadow(theme, SHADOW_LG),
   },
   koPanelHint: {
-    color: '#444', fontSize: 12, textAlign: 'center', marginBottom: 14,
+    color: c.koPanelHint, fontSize: 12, textAlign: 'center', marginBottom: 14,
   },
   koPanelInput: {
-    color: '#fff', fontSize: 22, lineHeight: 32,
+    color: c.textStrong, fontSize: 22, lineHeight: 32,
     textAlign: 'center', minHeight: 60,
     textAlignVertical: 'center',
   },
 
   // History screen
-  histCont:  { flex: 1, backgroundColor: '#0f0f0f', paddingTop: 48 },
+  histCont:  { flex: 1, backgroundColor: c.bg, paddingTop: 48 },
   histHead: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 16, paddingBottom: 14, paddingTop: 10,
-    borderBottomWidth: 1, borderBottomColor: '#1a1a1a',
+    borderBottomWidth: 1, borderBottomColor: c.histHeaderBorder,
   },
   backBtn:   { padding: 8, marginRight: 8 },
-  backTxt:   { color: '#fff', fontSize: 22 },
-  histTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  histTitle: { color: c.histTitle, fontSize: 18, fontWeight: '700' },
   histScenChip: {
     flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
-    backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#242424',
+    backgroundColor: c.histChipBg, borderWidth: 1, borderColor: c.histChipBorder,
     borderRadius: 20, paddingHorizontal: 12, paddingVertical: 7,
     marginHorizontal: 16, marginTop: 12,
+    ...shadow(theme, SHADOW_SM),
   },
-  histScenChipTxt: { color: '#e8d9ad', fontSize: 12.5, maxWidth: 220 },
+  histScenChipTxt: { color: c.histChipText, fontSize: 12.5, maxWidth: 220 },
   histScenDrop: {
-    marginHorizontal: 16, marginTop: 6, backgroundColor: '#1e1e1e',
-    borderWidth: 1, borderColor: '#2a2a2a', borderRadius: 12, padding: 5,
+    marginHorizontal: 16, marginTop: 6, backgroundColor: c.histDropBg,
+    borderWidth: 1, borderColor: c.histDropBorder, borderRadius: 12, padding: 5,
+    ...shadow(theme, SHADOW_MD),
   },
   histScenOpt:     { paddingVertical: 10, paddingHorizontal: 10, borderRadius: 8 },
-  histScenOptOn:   { backgroundColor: '#262626' },
-  histScenOptTxt:  { color: '#b0b0b0', fontSize: 13 },
-  histScenOptTxtOn:{ color: '#fff', fontWeight: '600' },
+  histScenOptOn:   { backgroundColor: c.histOptActiveBg },
+  histScenOptTxt:  { color: c.histOptText, fontSize: 13 },
+  histScenOptTxtOn:{ color: c.textStrong, fontWeight: '600' },
   histList:     { padding: 16, paddingBottom: 40 },
   histEmpty:    { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  histEmptyTxt: { color: '#444', fontSize: 16 },
+  histEmptyTxt: { color: c.histEmptyText, fontSize: 16 },
   chatWrap:     { marginBottom: 10, flexDirection: 'row' },
   chatRight:    { justifyContent: 'flex-end' },
   chatLeft:     { justifyContent: 'flex-start' },
   chatBub:      { maxWidth: '78%', borderRadius: 18, padding: 14 },
-  chatBubRu:    { backgroundColor: '#5b21b6', borderBottomRightRadius: 4 },
-  chatBubKo:    { backgroundColor: '#1f1f1f', borderBottomLeftRadius: 4 },
-  chatOrig:     { color: '#fff', fontSize: 15, lineHeight: 22 },
-  chatSep:      { color: 'rgba(255,255,255,0.3)', fontSize: 11, marginVertical: 3 },
-  chatTrans:    { color: 'rgba(255,255,255,0.65)', fontSize: 13, lineHeight: 19, fontStyle: 'italic' },
-  chatTime:     { color: 'rgba(255,255,255,0.3)', fontSize: 10, marginTop: 6, textAlign: 'right' },
+  chatBubRu:    { backgroundColor: c.chatRuBg, borderBottomRightRadius: 4 },
+  chatBubKo:    { backgroundColor: c.chatKoBg, borderBottomLeftRadius: 4, borderWidth: 1, borderColor: c.chatKoBorder },
+  chatOrig:     { fontSize: 15, lineHeight: 22 },
+  chatSep:      { marginVertical: 3 },
+  chatTrans:    { fontSize: 13, lineHeight: 19, fontStyle: 'italic' },
+  chatTime:     { fontSize: 10, marginTop: 6, textAlign: 'right' },
 
   // Scenario picker
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  overlay: { flex: 1, backgroundColor: c.scrimLight, justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: '#191919', borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    backgroundColor: c.sheetBg, borderTopLeftRadius: 28, borderTopRightRadius: 28,
     paddingTop: 8, paddingHorizontal: 20, paddingBottom: 44, maxHeight: '82%',
+    ...shadow(theme, SHADOW_LG),
   },
   sheetHead: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#2a2a2a', marginBottom: 8,
+    paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: c.sheetHeadBorder, marginBottom: 8,
   },
-  sheetTitle:    { color: '#888', fontSize: 13, textTransform: 'uppercase', letterSpacing: 1.2 },
-  sheetCloseTxt: { color: '#666', fontSize: 20 },
+  sheetTitle:    { color: c.sheetTitle, fontSize: 13, textTransform: 'uppercase', letterSpacing: 1.2 },
   sheetList:     { maxHeight: 340 },
   sheetSectionLbl: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     paddingHorizontal: 6, paddingTop: 10, paddingBottom: 4,
   },
   sheetSectionLblTxt: {
-    fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8, color: '#f0b429',
+    fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8,
   },
   sheetSectionPlainTxt: {
-    fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8, color: '#666',
+    fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8, color: c.sheetSectionPlain,
     paddingHorizontal: 6, paddingTop: 14, paddingBottom: 4,
   },
   sheetItem: {
     flexDirection: 'row', alignItems: 'center',
     borderRadius: 12, marginBottom: 2,
   },
-  sheetItemOn:      { backgroundColor: '#252525' },
-  sheetItemPinned:  { backgroundColor: '#201a0c' },
+  sheetItemOn:      { backgroundColor: c.sheetItemOnBg },
   sheetItemLabel:   { flex: 1, paddingVertical: 14, paddingHorizontal: 4 },
-  sheetItemTxt:     { color: '#aaa', fontSize: 17 },
-  sheetItemTxtOn:   { color: '#fff', fontWeight: '600' },
+  sheetItemTxt:     { color: c.sheetItemText, fontSize: 17 },
+  sheetItemTxtOn:   { color: c.sheetItemTextOn, fontWeight: '600' },
   pinIconBtn:    { width: 34, height: 40, justifyContent: 'center', alignItems: 'center' },
   sheetIconBtn:  { width: 34, height: 40, justifyContent: 'center', alignItems: 'center' },
-  pinToast:      { textAlign: 'center', color: '#f87171', fontSize: 11, marginTop: 4, marginBottom: 2 },
+  pinToast:      { textAlign: 'center', color: c.fieldError, fontSize: 11, marginTop: 4, marginBottom: 2 },
   addBtn: {
     marginTop: 12, paddingVertical: 14, alignItems: 'center',
-    borderRadius: 12, borderWidth: 1, borderColor: '#2a2a2a', borderStyle: 'dashed',
+    borderRadius: 12, borderWidth: 1, borderColor: c.addBorder, borderStyle: 'dashed',
     flexDirection: 'row', justifyContent: 'center', gap: 8,
   },
-  addBtnTxt: { color: '#555', fontSize: 16 },
+  addBtnTxt: { color: c.addText, fontSize: 16 },
 
   // Scenario create / edit sub-views
   subHead: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#2a2a2a', marginBottom: 12,
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: c.subHeadBorder, marginBottom: 12,
   },
-  subHeadTitle: { color: '#fff', fontSize: 15, fontWeight: '700', flex: 1 },
+  subHeadTitle: { color: c.subHeadTitle, fontSize: 15, fontWeight: '700', flex: 1 },
   fieldLbl: {
     fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8,
-    color: '#666', marginBottom: 6, marginTop: 4,
+    color: c.fieldLbl, marginBottom: 6, marginTop: 4,
   },
   fieldInput: {
-    backgroundColor: '#232323', borderWidth: 1, borderColor: '#333', borderRadius: 10,
-    color: '#fff', fontSize: 15, paddingHorizontal: 13, paddingVertical: 11,
+    backgroundColor: c.fieldBg, borderWidth: 1, borderColor: c.fieldBorder, borderRadius: 10,
+    color: c.fieldNameText, fontSize: 15, paddingHorizontal: 13, paddingVertical: 11,
   },
   fieldTextarea: {
-    backgroundColor: '#232323', borderWidth: 1, borderColor: '#333', borderRadius: 10,
-    color: '#e0e0e0', fontSize: 13.5, lineHeight: 20, padding: 12, minHeight: 130,
+    backgroundColor: c.fieldBg, borderWidth: 1, borderColor: c.fieldBorder, borderRadius: 10,
+    color: c.fieldPromptText, fontSize: 13.5, lineHeight: 20, padding: 12, minHeight: 130,
   },
-  fieldError: { color: '#f87171', fontSize: 12, marginTop: 8 },
+  fieldError: { color: c.fieldError, fontSize: 12, marginTop: 8 },
   formActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
   btnNeutral: {
     flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center',
-    backgroundColor: '#232323', borderWidth: 1, borderColor: '#333',
+    backgroundColor: c.btnNeutralBg, borderWidth: 1, borderColor: c.btnNeutralBorder,
   },
-  btnNeutralTxt: { color: '#9a9a9a', fontSize: 14.5, fontWeight: '600' },
+  btnNeutralTxt: { color: c.btnNeutralText, fontSize: 14.5, fontWeight: '600' },
   btnSave: {
     flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center',
-    backgroundColor: '#1a4020', borderWidth: 1, borderColor: '#2a5c34',
+    backgroundColor: c.btnSaveBg, borderWidth: 1, borderColor: c.btnSaveBorder,
   },
-  btnSaveTxt: { color: '#4ade80', fontSize: 14.5, fontWeight: '700' },
+  btnSaveTxt: { color: c.btnSaveText, fontSize: 14.5, fontWeight: '700' },
   btnDanger: {
     flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center',
-    backgroundColor: '#3a1414', borderWidth: 1, borderColor: '#5c2323',
+    backgroundColor: c.btnDangerBg, borderWidth: 1, borderColor: c.btnDangerBorder,
   },
-  btnDangerTxt: { color: '#f87171', fontSize: 14.5, fontWeight: '700' },
+  btnDangerTxt: { color: c.btnDangerText, fontSize: 14.5, fontWeight: '700' },
 
   // Delete confirmation
   confirmScrim: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center',
+    backgroundColor: c.confirmScrim, justifyContent: 'center', alignItems: 'center',
     padding: 24, borderRadius: 28,
   },
   confirmCard: {
-    width: '100%', backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: '#2e2e2e',
+    width: '100%', backgroundColor: c.confirmBg, borderWidth: 1, borderColor: c.confirmBorder,
     borderRadius: 16, padding: 18,
+    ...shadow(theme, SHADOW_LG),
   },
-  confirmTitle: { color: '#fff', fontSize: 15, fontWeight: '700', marginBottom: 8 },
-  confirmText:  { color: '#9a9a9a', fontSize: 12.5, lineHeight: 19 },
-});
+  confirmTitle: { color: c.confirmTitle, fontSize: 15, fontWeight: '700', marginBottom: 8 },
+  confirmText:  { color: c.confirmText, fontSize: 12.5, lineHeight: 19 },
+  });
+}

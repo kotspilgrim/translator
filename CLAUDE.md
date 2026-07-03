@@ -107,11 +107,22 @@ Two screens managed via `screen` state (`'main'` | `'history'`).
 **History:** saved to `AsyncStorage` under `'translation_history'`, one array shared across all scenarios — each entry carries a `scenarioId`. On mount, entries older than 24 h are pruned. History screen filters by a `viewId` state (initialized from the main screen's current `scenarioId`), with a scenario chip + dropdown at the top to switch which scenario's history is displayed without leaving the screen. RU messages purple right, KO messages dark gray left.
 
 **Scenarios:** list comes from the backend (`GET /scenarios`), not AsyncStorage — see the backend section above for the registry and CRUD endpoints. The picker sheet (`showPicker` Modal) has three sub-views via `sheetView` state:
-- `'list'` — pinned section, then the rest; each row has a pin toggle (☆ `push-pin` icon), an edit (pencil) icon open to every scenario, and a delete icon shown only when `builtIn:false`
+- `'list'` — pinned section, then the rest; each row has a pin toggle (`push-pin` icon, filled accent color when pinned — pinned status is indicated by icon color only, rows don't get a tinted background), an edit (pencil) icon open to every scenario, and a delete icon shown only when `builtIn:false`
 - `'create'` — two fields, name + prompt, `POST /scenarios`
 - `'edit'` — fetches the live prompt via `GET /scenarios/:id`, saves via `PUT /scenarios/:id`
 
 Deleting asks for confirmation first: tapping the trash icon sets `deleteTarget`, which renders a small "Удалить сценарий? Да/Нет" card over the sheet instead of deleting immediately.
+
+## Theming (dark / light)
+
+Sourced from a Claude Design project ("Visualizing current state", `Translator Current.dc.html` — imported via the `DesignSync` MCP tool) that mocked up every screen in both a dark and a light palette.
+
+- **`COLORS.dark` / `COLORS.light`** (top of `App.js`) are the only place colors are defined — every style and every inline `<MI color=...>` reads a named token off `c = COLORS[theme]` (e.g. `c.bubbleBg`, `c.pinAccent`). There should be no hex literal anywhere else in the file except the shadow presets (`SHADOW_SM/MD/LG`, which use `#000` — shadows are black in both themes).
+- **`makeStyles(c, theme)`** replaces the old static `StyleSheet.create({...})` — it's a function now, called via `useMemo(() => makeStyles(c, theme), [c, theme])` in both `App` and `HistoryScreen`, so styles only recompute when the theme changes.
+- **`theme`** state (`'dark' | 'light'`, default `'dark'`) persists to `AsyncStorage` under `'translator_theme'`. Toggled from the menu drawer's last item ("Светлая тема" / "Тёмная тема", icon `light-mode`/`dark-mode`), separated from the items above it by a top border (`menuItemDivider`).
+- `<StatusBar style={c.statusBarStyle} />` switches status-bar icon color with the theme (`'light'` content on the dark theme, `'dark'` content on the light theme) — don't hardcode `style="light"` again, it'll make status bar icons invisible on the light background.
+- Light theme adds subtle card shadows (`shadow(theme, SHADOW_SM|MD|LG)`, spread into the relevant style objects) that dark theme intentionally doesn't have — dark stays flat-on-black exactly as before.
+- The history screen's chat bubbles are the one place colors are genuinely per-side *and* per-theme, not just per-theme: in dark, RU and KO bubbles are both light-text-on-dark; in light, the KO bubble flips to dark-text-on-white while RU stays white-text-on-purple. `HistoryScreen`'s `renderItem` picks `chatRuXxx`/`chatKoXxx` tokens explicitly per message side rather than sharing one generic style.
 
 ## Icons — Critical Implementation Detail
 
