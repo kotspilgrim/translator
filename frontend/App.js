@@ -2,8 +2,10 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, ActivityIndicator,
   ScrollView, FlatList, Modal, TextInput, Keyboard,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Platform, Animated, Easing,
 } from 'react-native';
+
+const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Speech from 'expo-speech';
@@ -15,6 +17,13 @@ const MI = ({ name, size, color, style }) => (
   <Text style={[{ fontFamily: 'MaterialIcons', fontSize: size, color }, style]}>
     {String.fromCodePoint(glyphs[name])}
   </Text>
+);
+
+const AnimatedText = Animated.createAnimatedComponent(Text);
+const AnimatedMI = ({ name, size, color, style }) => (
+  <AnimatedText style={[{ fontFamily: 'MaterialIcons', fontSize: size, color }, style]}>
+    {String.fromCodePoint(glyphs[name])}
+  </AnimatedText>
 );
 import {
   ExpoSpeechRecognitionModule,
@@ -166,6 +175,30 @@ export default function App() {
   const histRef = useRef([]);
 
   const [koRotated, setKoRotated] = useState(true);
+  const koFlipAnim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.timing(koFlipAnim, {
+      toValue: koRotated ? 1 : 0,
+      duration: 380,
+      easing: Easing.inOut(Easing.ease),
+      useNativeDriver: true,
+    }).start();
+  }, [koRotated]);
+  // Mic icon spins flat (same as before, just smooth now).
+  const koFlipIconRotate = koFlipAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
+
+  // The bubble flips over the horizontal axis, like turning a card top-to-bottom.
+  // A pure rotateX(180deg) only mirrors the content vertically (unreadable), so it's
+  // paired with a rotateY that snaps 0deg -> 180deg at the exact midpoint (t = 0.5,
+  // where rotateX = 90deg and the panel is edge-on/invisible, so the snap is unseen).
+  // rotateY(180) + rotateX(180) composes to the same result as a plain rotate(180deg),
+  // so the resting orientation (text, clear/TTS buttons) ends up exactly where it was
+  // before — only the transition in between now swings through the horizontal axis.
+  const koFlipBubbleX = koFlipAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
+  const koFlipBubbleY = koFlipAnim.interpolate({
+    inputRange:  [0, 0.499, 0.5, 1],
+    outputRange: ['0deg', '0deg', '180deg', '180deg'],
+  });
 
   // null = neither selected; 'ru' | 'ko' = that side active
   const [activeBubble,  setActiveBubble]  = useState(null);
@@ -589,10 +622,10 @@ export default function App() {
             onPress={() => handleMic('ko')}
             disabled={translating}
           >
-            <MI
+            <AnimatedMI
               name={micRecording('ko') ? 'stop' : 'mic'}
               size={26} color="#e6e6e6"
-              style={koRotated && S.micIconFlipped}
+              style={{ transform: [{ rotate: koFlipIconRotate }] }}
             />
           </TouchableOpacity>
           <TouchableOpacity style={S.flipBtn} onPress={() => setKoRotated(r => !r)}>
@@ -600,9 +633,14 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
-        {/* ── Korean bubble (rotated 180° for face-to-face) ── */}
-        <TouchableOpacity
-          style={[S.bubble, koRotated && S.bubbleKo, activeBubble === 'ko' && S.bubbleActive]}
+        {/* ── Korean bubble (rotated 180° for face-to-face) — flips over the
+             horizontal axis, like a card turning top-to-bottom ── */}
+        <AnimatedTouchable
+          style={[
+            S.bubble,
+            activeBubble === 'ko' && S.bubbleActive,
+            { transform: [{ perspective: 1000 }, { rotateY: koFlipBubbleY }, { rotateX: koFlipBubbleX }] },
+          ]}
           onPress={() => handleBubbleTap('ko')}
           activeOpacity={0.95}
         >
@@ -636,7 +674,7 @@ export default function App() {
           >
             <MI name="volume-up" size={16} color="#cfcfcf" />
           </TouchableOpacity>
-        </TouchableOpacity>
+        </AnimatedTouchable>
 
         {/* ── Gutter: scenario + history between bubbles ── */}
         <View style={S.gutter}>
@@ -1011,7 +1049,6 @@ const S = StyleSheet.create({
   micBtnRec: { backgroundColor: '#7f1d1d', borderColor: '#ef4444' },
   micBtnDim: { opacity: 0.3 },
   micIcon:        { fontSize: 24 },
-  micIconFlipped: { transform: [{ rotate: '180deg' }] },
 
   // Test connection button — offset into the corner so it can't be hit by accident
   testBtn: {
@@ -1039,7 +1076,6 @@ const S = StyleSheet.create({
     borderRadius: 20, borderWidth: 2, borderColor: '#1e1e1e',
     overflow: 'hidden',
   },
-  bubbleKo:     { transform: [{ rotate: '180deg' }] },
   bubbleActive: { borderColor: '#ffffff' },
   bubbleBody: {
     flex: 1, justifyContent: 'center', alignItems: 'center', padding: 18,
