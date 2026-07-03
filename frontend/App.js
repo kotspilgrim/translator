@@ -24,18 +24,21 @@ import {
 // ── Config ───────────────────────────────────────────────────────────────────
 const BACKEND_URL   = 'http://100.68.162.96:3000';
 const HISTORY_KEY   = 'translation_history';
-const SCENARIOS_KEY = 'translator_scenarios';
+const PINNED_KEY    = 'translator_pinned_scenarios';
 const HISTORY_TTL   = 24 * 60 * 60 * 1000;
 const SILENCE_MS    = 7000;
+const MAX_PINNED    = 3;
 
-const DEFAULT_SCENARIOS = [
-  { id: 'stranger-on-street', name: 'Незнакомец на улице' },
-  { id: 'v-magazine',         name: 'В магазине'          },
-  { id: 'v-restorane',        name: 'В ресторане'         },
-  { id: 'v-banke',            name: 'В банке'             },
-  { id: 'v-bolnitse',         name: 'В больнице'          },
-  { id: 'v-otele',            name: 'В отеле'             },
-  { id: 'v-transporte',       name: 'В транспорте'        },
+// Used until GET /scenarios resolves (or if the backend is unreachable)
+const FALLBACK_SCENARIOS = [
+  { id: 'stranger-on-street', name: 'Незнакомец на улице',      builtIn: true },
+  { id: 'v-magazine',         name: 'В магазине',               builtIn: true },
+  { id: 'v-restorane',        name: 'В ресторане',              builtIn: true },
+  { id: 'v-banke',            name: 'В банке',                  builtIn: true },
+  { id: 'v-bolnitse',         name: 'В больнице',               builtIn: true },
+  { id: 'v-otele',            name: 'В отеле',                  builtIn: true },
+  { id: 'v-transporte',       name: 'В транспорте',             builtIn: true },
+  { id: 'v-vetklinike',       name: 'В ветеринарной клинике',   builtIn: true },
 ];
 
 // Placeholders — text content only, not rotation
@@ -50,7 +53,13 @@ const fmtTime = ts => {
 };
 
 // ── History screen ───────────────────────────────────────────────────────────
-function HistoryScreen({ history, onBack }) {
+function HistoryScreen({ history, scenarios, initialScenarioId, onBack }) {
+  const [viewId,   setViewId]   = useState(initialScenarioId);
+  const [showDrop, setShowDrop] = useState(false);
+
+  const viewName = scenarios.find(s => s.id === viewId)?.name || 'Сценарий';
+  const filtered = history.filter(i => i.scenarioId === viewId);
+
   return (
     <View style={S.histCont}>
       <StatusBar style="light" />
@@ -58,15 +67,40 @@ function HistoryScreen({ history, onBack }) {
         <TouchableOpacity onPress={onBack} style={S.backBtn}>
           <MI name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
-        <Text style={S.histTitle}>История (24 ч)</Text>
+        <Text style={S.histTitle}>История</Text>
       </View>
-      {history.length === 0 ? (
+
+      <TouchableOpacity style={S.histScenChip} onPress={() => setShowDrop(v => !v)}>
+        <MI name="push-pin" size={13} color="#f0b429" />
+        <Text style={S.histScenChipTxt} numberOfLines={1}>{viewName}</Text>
+        <MI name="expand-more" size={16} color="#8a8a8a" />
+      </TouchableOpacity>
+
+      {showDrop && (
+        <View style={S.histScenDrop}>
+          <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+            {scenarios.map(s => (
+              <TouchableOpacity
+                key={s.id}
+                style={[S.histScenOpt, s.id === viewId && S.histScenOptOn]}
+                onPress={() => { setViewId(s.id); setShowDrop(false); }}
+              >
+                <Text style={[S.histScenOptTxt, s.id === viewId && S.histScenOptTxtOn]} numberOfLines={1}>
+                  {s.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {filtered.length === 0 ? (
         <View style={S.histEmpty}>
           <Text style={S.histEmptyTxt}>Нет переводов за последние 24 часа</Text>
         </View>
       ) : (
         <FlatList
-          data={history}
+          data={filtered}
           keyExtractor={i => i.id}
           contentContainerStyle={S.histList}
           renderItem={({ item }) => {
@@ -100,12 +134,35 @@ export default function App() {
   }, [fontsLoaded, fontError]);
 
   const [screen,     setScreen]     = useState('main');
-  const [scenarios,  setScenarios]  = useState(DEFAULT_SCENARIOS);
-  const [scenario,   setScenario]   = useState('Незнакомец на улице');
+  const [showMenu,   setShowMenu]   = useState(false);
+
+  // ── Scenarios (source of truth: backend) ───────────────────────────────────
+  const [scenarios,   setScenarios]   = useState(FALLBACK_SCENARIOS);
+  const [scenarioId,  setScenarioId]  = useState(FALLBACK_SCENARIOS[0].id);
+  const scenarioIdRef = useRef(scenarioId);
+  useEffect(() => { scenarioIdRef.current = scenarioId; }, [scenarioId]);
+  const scenario = scenarios.find(s => s.id === scenarioId)?.name || '';
+
+  const [pinnedIds, setPinnedIds] = useState([]);
+
   const [showPicker, setShowPicker] = useState(false);
-  const [showAdd,    setShowAdd]    = useState(false);
-  const [addText,    setAddText]    = useState('');
-  const [history,    setHistory]    = useState([]);
+  const [sheetView,  setSheetView]  = useState('list'); // 'list' | 'create' | 'edit'
+
+  const [createName,    setCreateName]    = useState('');
+  const [createPrompt,  setCreatePrompt]  = useState('');
+  const [createSaving,  setCreateSaving]  = useState(false);
+  const [createError,   setCreateError]   = useState('');
+
+  const [editingScenario, setEditingScenario] = useState(null); // { id, name }
+  const [editPrompt,      setEditPrompt]      = useState('');
+  const [editLoading,     setEditLoading]     = useState(false);
+  const [editSaving,      setEditSaving]      = useState(false);
+  const [editError,       setEditError]       = useState('');
+
+  const [deleteTarget, setDeleteTarget] = useState(null); // { id, name }
+  const [pinToast,     setPinToast]     = useState(false);
+
+  const [history, setHistory] = useState([]);
   const histRef = useRef([]);
 
   const [koRotated, setKoRotated] = useState(true);
@@ -129,6 +186,36 @@ export default function App() {
 
   const silenceTimer = useRef(null);
 
+  // ── Connection test ──────────────────────────────────────────────────────
+  const [connStatus, setConnStatus] = useState('idle'); // idle | checking | ok | bad
+  const [connMsg,    setConnMsg]    = useState('');
+  const connResetTimer = useRef(null);
+
+  const testConnection = async () => {
+    clearTimeout(connResetTimer.current);
+    setConnStatus('checking');
+    setConnMsg('проверка…');
+    const started = Date.now();
+    try {
+      const ctrl = new AbortController();
+      const tid  = setTimeout(() => ctrl.abort(), 8000);
+      const resp = await fetch(`${BACKEND_URL}/health`, { signal: ctrl.signal });
+      clearTimeout(tid);
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.ok) {
+        setConnStatus('ok');
+        setConnMsg(`${Date.now() - started} мс`);
+      } else {
+        setConnStatus('bad');
+        setConnMsg('нет связи');
+      }
+    } catch {
+      setConnStatus('bad');
+      setConnMsg('нет связи');
+    }
+    connResetTimer.current = setTimeout(() => setConnStatus('idle'), 2500);
+  };
+
   // ── History ───────────────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
@@ -150,44 +237,181 @@ export default function App() {
     try { await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updated)); } catch {}
   };
 
-  // ── Scenarios ─────────────────────────────────────────────────────────────
+  // ── Scenarios: fetch from backend ───────────────────────────────────────────
+  const fetchScenarios = async () => {
+    try {
+      const resp = await fetch(`${BACKEND_URL}/scenarios`);
+      const data = await resp.json();
+      if (Array.isArray(data) && data.length) {
+        setScenarios(data);
+        return data;
+      }
+    } catch {}
+    return null;
+  };
+
+  useEffect(() => { fetchScenarios(); }, []);
+
+  // ── Pinned scenarios (local, max 3) ─────────────────────────────────────────
   useEffect(() => {
     (async () => {
       try {
-        const raw = await AsyncStorage.getItem(SCENARIOS_KEY);
-        if (raw) {
-          const saved = JSON.parse(raw);
-          setScenarios(saved);
-          if (saved.length && !saved.find(s => s.name === scenario)) {
-            setScenario(saved[0].name);
-          }
-        } else {
-          await AsyncStorage.setItem(SCENARIOS_KEY, JSON.stringify(DEFAULT_SCENARIOS));
-        }
+        const raw = await AsyncStorage.getItem(PINNED_KEY);
+        if (raw) setPinnedIds(JSON.parse(raw));
       } catch {}
     })();
   }, []);
 
-  const persistScenarios = async list => {
-    setScenarios(list);
-    try { await AsyncStorage.setItem(SCENARIOS_KEY, JSON.stringify(list)); } catch {}
+  const togglePin = id => {
+    setPinnedIds(prev => {
+      if (prev.includes(id)) {
+        const next = prev.filter(x => x !== id);
+        AsyncStorage.setItem(PINNED_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      }
+      if (prev.length >= MAX_PINNED) {
+        setPinToast(true);
+        setTimeout(() => setPinToast(false), 1500);
+        return prev;
+      }
+      const next = [...prev, id];
+      AsyncStorage.setItem(PINNED_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
   };
 
-  const handleAddScenario = async () => {
-    const name = addText.trim();
-    if (!name) return;
-    const updated = [...scenarios, { id: 'custom-' + Date.now(), name }];
-    await persistScenarios(updated);
-    setAddText('');
-    setShowAdd(false);
+  // ── Scenario sheet: create / edit / delete ──────────────────────────────────
+  const closePicker = () => {
+    setShowPicker(false);
+    setSheetView('list');
+    setCreateName(''); setCreatePrompt(''); setCreateError('');
+    setEditingScenario(null); setEditPrompt(''); setEditError('');
   };
 
-  const handleDeleteScenario = async id => {
-    const updated = scenarios.filter(s => s.id !== id);
-    await persistScenarios(updated);
-    const deleted = scenarios.find(s => s.id === id);
-    if (deleted?.name === scenario && updated.length) setScenario(updated[0].name);
+  const handleCreateScenario = async () => {
+    const name = createName.trim();
+    const prompt = createPrompt.trim();
+    if (!name || !prompt) { setCreateError('Заполните оба поля'); return; }
+    setCreateSaving(true);
+    setCreateError('');
+    try {
+      const resp = await fetch(`${BACKEND_URL}/scenarios`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, prompt }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        await fetchScenarios();
+        setScenarioId(data.id);
+        setCreateName(''); setCreatePrompt('');
+        setSheetView('list');
+      } else {
+        setCreateError(data.error || 'Не удалось создать сценарий');
+      }
+    } catch {
+      setCreateError('Нет соединения с сервером');
+    }
+    setCreateSaving(false);
   };
+
+  const openEdit = async s => {
+    setEditingScenario(s);
+    setEditPrompt('');
+    setEditError('');
+    setSheetView('edit');
+    setEditLoading(true);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/scenarios/${s.id}`);
+      const data = await resp.json();
+      if (resp.ok) setEditPrompt(data.prompt || '');
+      else setEditError(data.error || 'Не удалось загрузить промпт');
+    } catch {
+      setEditError('Нет соединения с сервером');
+    }
+    setEditLoading(false);
+  };
+
+  const handleSaveEdit = async () => {
+    const prompt = editPrompt.trim();
+    if (!prompt || !editingScenario) return;
+    setEditSaving(true);
+    setEditError('');
+    try {
+      const resp = await fetch(`${BACKEND_URL}/scenarios/${editingScenario.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        await fetchScenarios();
+        setSheetView('list');
+      } else {
+        setEditError(data.error || 'Не удалось сохранить');
+      }
+    } catch {
+      setEditError('Нет соединения с сервером');
+    }
+    setEditSaving(false);
+  };
+
+  const handleDeleteScenario = async () => {
+    if (!deleteTarget) return;
+    const { id } = deleteTarget;
+    try {
+      const resp = await fetch(`${BACKEND_URL}/scenarios/${id}`, { method: 'DELETE' });
+      if (resp.ok || resp.status === 204) {
+        const updated = await fetchScenarios();
+        setPinnedIds(prev => {
+          const next = prev.filter(x => x !== id);
+          AsyncStorage.setItem(PINNED_KEY, JSON.stringify(next)).catch(() => {});
+          return next;
+        });
+        if (scenarioIdRef.current === id && updated?.length) setScenarioId(updated[0].id);
+      }
+    } catch {}
+    setDeleteTarget(null);
+  };
+
+  const pinnedScenarios = scenarios.filter(s => pinnedIds.includes(s.id));
+  const restScenarios   = scenarios.filter(s => !pinnedIds.includes(s.id));
+
+  const renderScenarioRow = (s, isPinned) => (
+    <View key={s.id} style={[S.sheetItem, scenarioId === s.id && S.sheetItemOn, isPinned && S.sheetItemPinned]}>
+      <TouchableOpacity
+        style={S.pinIconBtn}
+        onPress={() => togglePin(s.id)}
+        hitSlop={{ top: 8, right: 4, bottom: 8, left: 8 }}
+      >
+        <MI name="push-pin" size={16} color={isPinned ? '#f0b429' : '#5a5a5a'} />
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={S.sheetItemLabel}
+        onPress={() => { setScenarioId(s.id); closePicker(); }}
+      >
+        <Text style={[S.sheetItemTxt, scenarioId === s.id && S.sheetItemTxtOn]} numberOfLines={1}>
+          {s.name}
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={S.sheetIconBtn}
+        onPress={() => openEdit(s)}
+        hitSlop={{ top: 8, right: 4, bottom: 8, left: 4 }}
+      >
+        <MI name="edit" size={17} color="#7d7d7d" />
+      </TouchableOpacity>
+      {!s.builtIn && (
+        <TouchableOpacity
+          style={S.sheetIconBtn}
+          onPress={() => setDeleteTarget({ id: s.id, name: s.name })}
+          hitSlop={{ top: 8, right: 8, bottom: 8, left: 4 }}
+        >
+          <MI name="delete" size={18} color="#8a8a8a" />
+        </TouchableOpacity>
+      )}
+    </View>
+  );
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const handleSpeak = (text, lang) => {
@@ -240,7 +464,7 @@ export default function App() {
       const resp = await fetch(`${BACKEND_URL}/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:   JSON.stringify({ text, fromLang, toLang, context: scenario }),
+        body:   JSON.stringify({ text, fromLang, toLang, context: scenarioIdRef.current }),
         signal: ctrl.signal,
       });
       clearTimeout(tid);
@@ -252,6 +476,7 @@ export default function App() {
           id: String(Date.now()), originalText: text,
           translatedText: data.translation,
           direction: sourceBubble === 'ru' ? 'ru-ko' : 'ko-ru',
+          scenarioId: scenarioIdRef.current,
           timestamp: Date.now(),
         });
         const next = sourceBubble === 'ru' ? 'ko' : 'ru';
@@ -338,7 +563,14 @@ export default function App() {
   const micRecording = bubble => recognizing && activeBubble === bubble;
 
   if (screen === 'history') {
-    return <HistoryScreen history={history} onBack={() => setScreen('main')} />;
+    return (
+      <HistoryScreen
+        history={history}
+        scenarios={scenarios}
+        initialScenarioId={scenarioId}
+        onBack={() => setScreen('main')}
+      />
+    );
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -480,8 +712,73 @@ export default function App() {
           >
             <MI name={micRecording('ru') ? 'stop' : 'mic'} size={26} color="#e6e6e6" />
           </TouchableOpacity>
+
+          {/* Test connection — kept in the corner, away from the mic, so it can't be hit by accident */}
+          <TouchableOpacity
+            style={[
+              S.testBtn,
+              connStatus === 'ok'       && S.testBtnOk,
+              connStatus === 'bad'      && S.testBtnBad,
+              connStatus === 'checking' && S.testBtnChecking,
+            ]}
+            onPress={testConnection}
+            disabled={connStatus === 'checking'}
+          >
+            <MI
+              name="network-check"
+              size={16}
+              color={
+                connStatus === 'ok'       ? '#4ade80' :
+                connStatus === 'bad'      ? '#f87171' :
+                connStatus === 'checking' ? '#4fc3f7' : '#9fb8c4'
+              }
+            />
+            {connStatus !== 'idle' && (
+              <View style={S.testPill}>
+                <Text style={[
+                  S.testPillTxt,
+                  connStatus === 'ok'  && S.testPillOk,
+                  connStatus === 'bad' && S.testPillBad,
+                ]}>
+                  {connMsg}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      {/* ── Menu button — physical top-left corner ── */}
+      <TouchableOpacity style={S.menuBtn} onPress={() => setShowMenu(true)}>
+        <MI name="menu" size={20} color="#cfcfcf" />
+      </TouchableOpacity>
+
+      {/* ── Menu drawer ──────────────────────────────────────────────────────── */}
+      {showMenu && (
+        <TouchableOpacity
+          style={S.menuScrim}
+          activeOpacity={1}
+          onPress={() => setShowMenu(false)}
+        >
+          <View style={S.menuDrawer} onStartShouldSetResponder={() => true}>
+            <Text style={S.menuBrand}>RU ⇄ KO Переводчик</Text>
+            <Text style={S.menuSub}>{BACKEND_URL.replace('http://', '')}</Text>
+
+            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setShowPicker(true); }}>
+              <MI name="list" size={20} color="#8f8f8f" />
+              <Text style={S.menuItemTxt}>Сценарии</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setScreen('history'); }}>
+              <MI name="history" size={20} color="#8f8f8f" />
+              <Text style={S.menuItemTxt}>История</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); testConnection(); }}>
+              <MI name="network-check" size={20} color="#8f8f8f" />
+              <Text style={S.menuItemTxt}>Проверить связь</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      )}
 
       {/* ── Korean typing overlay ─────────────────────────────────────────────
           Appears at the PHYSICAL TOP of the screen (Korean person's side).
@@ -519,71 +816,148 @@ export default function App() {
         visible={showPicker}
         transparent
         animationType="slide"
-        onRequestClose={() => { setShowPicker(false); setShowAdd(false); setAddText(''); }}
+        onRequestClose={closePicker}
       >
-        <TouchableOpacity
-          style={S.overlay}
-          activeOpacity={1}
-          onPress={() => { setShowPicker(false); setShowAdd(false); setAddText(''); }}
-        >
+        <TouchableOpacity style={S.overlay} activeOpacity={1} onPress={closePicker}>
           <View style={S.sheet} onStartShouldSetResponder={() => true}>
-            <View style={S.sheetHead}>
-              <Text style={S.sheetTitle}>Сценарий</Text>
-              <TouchableOpacity
-                onPress={() => { setShowPicker(false); setShowAdd(false); setAddText(''); }}
-                hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-              >
-                <MI name="close" size={22} color="#777" />
-              </TouchableOpacity>
-            </View>
 
-            <ScrollView style={S.sheetList} showsVerticalScrollIndicator={false}>
-              {scenarios.map(s => (
-                <View key={s.id} style={[S.sheetItem, scenario === s.name && S.sheetItemOn]}>
-                  <TouchableOpacity
-                    style={S.sheetItemLabel}
-                    onPress={() => { setScenario(s.name); setShowPicker(false); setShowAdd(false); }}
-                  >
-                    <Text style={[S.sheetItemTxt, scenario === s.name && S.sheetItemTxtOn]}>
-                      {s.name}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleDeleteScenario(s.id)}
-                    hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                    style={S.sheetDelBtn}
-                  >
-                    <MI name="delete" size={20} color="#8a8a8a" />
+            {sheetView === 'list' && (
+              <>
+                <View style={S.sheetHead}>
+                  <Text style={S.sheetTitle}>Сценарий</Text>
+                  <TouchableOpacity onPress={closePicker} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                    <MI name="close" size={22} color="#777" />
                   </TouchableOpacity>
                 </View>
-              ))}
-            </ScrollView>
 
-            {showAdd ? (
-              <View style={S.addRow}>
-                <TextInput
-                  style={S.addInput}
-                  value={addText}
-                  onChangeText={setAddText}
-                  placeholder="Название сценария..."
-                  placeholderTextColor="#555"
-                  autoFocus
-                  returnKeyType="done"
-                  onSubmitEditing={handleAddScenario}
-                />
-                <TouchableOpacity style={S.addOkBtn} onPress={handleAddScenario}>
-                  <Text style={S.addOkTxt}>✓</Text>
+                <ScrollView style={S.sheetList} showsVerticalScrollIndicator={false}>
+                  {pinnedScenarios.length > 0 && (
+                    <>
+                      <View style={S.sheetSectionLbl}>
+                        <MI name="push-pin" size={12} color="#f0b429" />
+                        <Text style={S.sheetSectionLblTxt}>Закреплено ({pinnedScenarios.length}/{MAX_PINNED})</Text>
+                      </View>
+                      {pinnedScenarios.map(s => renderScenarioRow(s, true))}
+                    </>
+                  )}
+                  {restScenarios.length > 0 && (
+                    <>
+                      <Text style={S.sheetSectionPlainTxt}>Остальные</Text>
+                      {restScenarios.map(s => renderScenarioRow(s, false))}
+                    </>
+                  )}
+                </ScrollView>
+
+                {pinToast && <Text style={S.pinToast}>Можно закрепить не более {MAX_PINNED}</Text>}
+
+                <TouchableOpacity style={S.addBtn} onPress={() => setSheetView('create')}>
+                  <MI name="add" size={20} color="#666" />
+                  <Text style={S.addBtnTxt}>Добавить сценарий</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={S.addCancelBtn} onPress={() => { setShowAdd(false); setAddText(''); }}>
-                  <Text style={S.addCancelTxt}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity style={S.addBtn} onPress={() => setShowAdd(true)}>
-                <MI name="add" size={20} color="#666" />
-                <Text style={S.addBtnTxt}>Добавить сценарий</Text>
-              </TouchableOpacity>
+              </>
             )}
+
+            {sheetView === 'create' && (
+              <>
+                <View style={S.subHead}>
+                  <TouchableOpacity onPress={() => setSheetView('list')} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                    <MI name="arrow-back" size={22} color="#ccc" />
+                  </TouchableOpacity>
+                  <Text style={S.subHeadTitle}>Новый сценарий</Text>
+                </View>
+
+                <Text style={S.fieldLbl}>Название</Text>
+                <TextInput
+                  style={S.fieldInput}
+                  value={createName}
+                  onChangeText={setCreateName}
+                  placeholder="Например: На рынке"
+                  placeholderTextColor="#555"
+                />
+
+                <Text style={S.fieldLbl}>Промпт</Text>
+                <TextInput
+                  style={S.fieldTextarea}
+                  value={createPrompt}
+                  onChangeText={setCreatePrompt}
+                  placeholder={'Опишите контекст и стиль перевода.\n{fromLang} и {toLang} подставятся автоматически.'}
+                  placeholderTextColor="#555"
+                  multiline
+                  textAlignVertical="top"
+                />
+
+                {!!createError && <Text style={S.fieldError}>{createError}</Text>}
+
+                <View style={S.formActions}>
+                  <TouchableOpacity style={S.btnNeutral} onPress={() => setSheetView('list')} disabled={createSaving}>
+                    <Text style={S.btnNeutralTxt}>Отмена</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={S.btnSave} onPress={handleCreateScenario} disabled={createSaving}>
+                    {createSaving
+                      ? <ActivityIndicator color="#4ade80" size="small" />
+                      : <Text style={S.btnSaveTxt}>Создать</Text>}
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
+            {sheetView === 'edit' && editingScenario && (
+              <>
+                <View style={S.subHead}>
+                  <TouchableOpacity onPress={() => setSheetView('list')} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                    <MI name="arrow-back" size={22} color="#ccc" />
+                  </TouchableOpacity>
+                  <Text style={S.subHeadTitle} numberOfLines={1}>{editingScenario.name}</Text>
+                </View>
+
+                <Text style={S.fieldLbl}>Промпт</Text>
+                {editLoading ? (
+                  <ActivityIndicator color="#4fc3f7" style={{ marginVertical: 20 }} />
+                ) : (
+                  <TextInput
+                    style={[S.fieldTextarea, { minHeight: 180 }]}
+                    value={editPrompt}
+                    onChangeText={setEditPrompt}
+                    multiline
+                    textAlignVertical="top"
+                    placeholderTextColor="#555"
+                  />
+                )}
+
+                {!!editError && <Text style={S.fieldError}>{editError}</Text>}
+
+                <View style={S.formActions}>
+                  <TouchableOpacity style={S.btnNeutral} onPress={() => setSheetView('list')} disabled={editSaving}>
+                    <Text style={S.btnNeutralTxt}>Отмена</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={S.btnSave} onPress={handleSaveEdit} disabled={editSaving || editLoading}>
+                    {editSaving
+                      ? <ActivityIndicator color="#4ade80" size="small" />
+                      : <Text style={S.btnSaveTxt}>Сохранить</Text>}
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
+            {deleteTarget && (
+              <View style={S.confirmScrim}>
+                <View style={S.confirmCard}>
+                  <Text style={S.confirmTitle}>Удалить сценарий?</Text>
+                  <Text style={S.confirmText}>
+                    «{deleteTarget.name}» и его промпт будут удалены без возможности восстановить.
+                  </Text>
+                  <View style={S.formActions}>
+                    <TouchableOpacity style={S.btnNeutral} onPress={() => setDeleteTarget(null)}>
+                      <Text style={S.btnNeutralTxt}>Нет</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={S.btnDanger} onPress={handleDeleteScenario}>
+                      <Text style={S.btnDangerTxt}>Да</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            )}
+
           </View>
         </TouchableOpacity>
       </Modal>
@@ -596,9 +970,30 @@ const S = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0f0f0f' },
   kav:  { flex: 1, paddingTop: 48, paddingBottom: 12 },
 
+  // Menu button + drawer
+  menuBtn: {
+    position: 'absolute', top: 58, left: 14, zIndex: 20, elevation: 6,
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2e2e2e',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  menuScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 90, elevation: 20,
+  },
+  menuDrawer: {
+    width: '74%', height: '100%', backgroundColor: '#161616',
+    borderRightWidth: 1, borderRightColor: '#242424',
+    paddingTop: 56, paddingHorizontal: 18,
+  },
+  menuBrand: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  menuSub:   { color: '#555', fontSize: 11, marginTop: 2, marginBottom: 20 },
+  menuItem:  { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 13 },
+  menuItemTxt: { color: '#c9c9c9', fontSize: 15 },
+
   // Mic rows
   koMicRow: { height: 58, justifyContent: 'center', alignItems: 'center', position: 'relative' },
-  ruMicRow: { height: 58, justifyContent: 'center', alignItems: 'center' },
+  ruMicRow: { height: 58, justifyContent: 'center', alignItems: 'center', position: 'relative' },
 
   // Flip button
   flipBtn: {
@@ -617,6 +1012,25 @@ const S = StyleSheet.create({
   micBtnDim: { opacity: 0.3 },
   micIcon:        { fontSize: 24 },
   micIconFlipped: { transform: [{ rotate: '180deg' }] },
+
+  // Test connection button — offset into the corner so it can't be hit by accident
+  testBtn: {
+    position: 'absolute', right: 14,
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: '#1a1a1a', borderWidth: 1.5, borderColor: '#2e2e2e',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  testBtnOk:       { borderColor: '#4ade80' },
+  testBtnBad:      { borderColor: '#f87171' },
+  testBtnChecking: { borderColor: '#4fc3f7' },
+  testPill: {
+    position: 'absolute', bottom: '100%', marginBottom: 6, alignSelf: 'center',
+    backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: '#2e2e2e', borderRadius: 20,
+    paddingHorizontal: 10, paddingVertical: 4,
+  },
+  testPillTxt: { fontSize: 10, color: '#9a9a9a' },
+  testPillOk:  { color: '#4ade80' },
+  testPillBad: { color: '#f87171' },
 
   // Bubbles
   bubble: {
@@ -708,6 +1122,21 @@ const S = StyleSheet.create({
   backBtn:   { padding: 8, marginRight: 8 },
   backTxt:   { color: '#fff', fontSize: 22 },
   histTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  histScenChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+    backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#242424',
+    borderRadius: 20, paddingHorizontal: 12, paddingVertical: 7,
+    marginHorizontal: 16, marginTop: 12,
+  },
+  histScenChipTxt: { color: '#e8d9ad', fontSize: 12.5, maxWidth: 220 },
+  histScenDrop: {
+    marginHorizontal: 16, marginTop: 6, backgroundColor: '#1e1e1e',
+    borderWidth: 1, borderColor: '#2a2a2a', borderRadius: 12, padding: 5,
+  },
+  histScenOpt:     { paddingVertical: 10, paddingHorizontal: 10, borderRadius: 8 },
+  histScenOptOn:   { backgroundColor: '#262626' },
+  histScenOptTxt:  { color: '#b0b0b0', fontSize: 13 },
+  histScenOptTxtOn:{ color: '#fff', fontWeight: '600' },
   histList:     { padding: 16, paddingBottom: 40 },
   histEmpty:    { flex: 1, justifyContent: 'center', alignItems: 'center' },
   histEmptyTxt: { color: '#444', fontSize: 16 },
@@ -726,7 +1155,7 @@ const S = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: '#191919', borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingTop: 8, paddingHorizontal: 20, paddingBottom: 44, maxHeight: '80%',
+    paddingTop: 8, paddingHorizontal: 20, paddingBottom: 44, maxHeight: '82%',
   },
   sheetHead: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -734,36 +1163,83 @@ const S = StyleSheet.create({
   },
   sheetTitle:    { color: '#888', fontSize: 13, textTransform: 'uppercase', letterSpacing: 1.2 },
   sheetCloseTxt: { color: '#666', fontSize: 20 },
-  sheetList:     { maxHeight: 320 },
+  sheetList:     { maxHeight: 340 },
+  sheetSectionLbl: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 6, paddingTop: 10, paddingBottom: 4,
+  },
+  sheetSectionLblTxt: {
+    fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8, color: '#f0b429',
+  },
+  sheetSectionPlainTxt: {
+    fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8, color: '#666',
+    paddingHorizontal: 6, paddingTop: 14, paddingBottom: 4,
+  },
   sheetItem: {
     flexDirection: 'row', alignItems: 'center',
-    borderRadius: 12, marginBottom: 2, paddingRight: 8,
+    borderRadius: 12, marginBottom: 2,
   },
-  sheetItemOn:    { backgroundColor: '#252525' },
-  sheetItemLabel: { flex: 1, paddingVertical: 14, paddingHorizontal: 12 },
-  sheetItemTxt:   { color: '#aaa', fontSize: 17 },
-  sheetItemTxtOn: { color: '#fff', fontWeight: '600' },
-  sheetDelBtn:    { padding: 8 },
-  sheetDelTxt:    { fontSize: 16 },
+  sheetItemOn:      { backgroundColor: '#252525' },
+  sheetItemPinned:  { backgroundColor: '#201a0c' },
+  sheetItemLabel:   { flex: 1, paddingVertical: 14, paddingHorizontal: 4 },
+  sheetItemTxt:     { color: '#aaa', fontSize: 17 },
+  sheetItemTxtOn:   { color: '#fff', fontWeight: '600' },
+  pinIconBtn:    { width: 34, height: 40, justifyContent: 'center', alignItems: 'center' },
+  sheetIconBtn:  { width: 34, height: 40, justifyContent: 'center', alignItems: 'center' },
+  pinToast:      { textAlign: 'center', color: '#f87171', fontSize: 11, marginTop: 4, marginBottom: 2 },
   addBtn: {
     marginTop: 12, paddingVertical: 14, alignItems: 'center',
     borderRadius: 12, borderWidth: 1, borderColor: '#2a2a2a', borderStyle: 'dashed',
+    flexDirection: 'row', justifyContent: 'center', gap: 8,
   },
   addBtnTxt: { color: '#555', fontSize: 16 },
-  addRow:    { flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 8 },
-  addInput: {
-    flex: 1, backgroundColor: '#252525', borderRadius: 12,
-    borderWidth: 1, borderColor: '#333', color: '#fff',
-    fontSize: 16, paddingHorizontal: 14, paddingVertical: 11,
+
+  // Scenario create / edit sub-views
+  subHead: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#2a2a2a', marginBottom: 12,
   },
-  addOkBtn: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: '#1a5c2a', justifyContent: 'center', alignItems: 'center',
+  subHeadTitle: { color: '#fff', fontSize: 15, fontWeight: '700', flex: 1 },
+  fieldLbl: {
+    fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8,
+    color: '#666', marginBottom: 6, marginTop: 4,
   },
-  addOkTxt:     { color: '#4ade80', fontSize: 18, fontWeight: '700' },
-  addCancelBtn: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: '#2a1a1a', justifyContent: 'center', alignItems: 'center',
+  fieldInput: {
+    backgroundColor: '#232323', borderWidth: 1, borderColor: '#333', borderRadius: 10,
+    color: '#fff', fontSize: 15, paddingHorizontal: 13, paddingVertical: 11,
   },
-  addCancelTxt: { color: '#f87171', fontSize: 16 },
+  fieldTextarea: {
+    backgroundColor: '#232323', borderWidth: 1, borderColor: '#333', borderRadius: 10,
+    color: '#e0e0e0', fontSize: 13.5, lineHeight: 20, padding: 12, minHeight: 130,
+  },
+  fieldError: { color: '#f87171', fontSize: 12, marginTop: 8 },
+  formActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  btnNeutral: {
+    flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center',
+    backgroundColor: '#232323', borderWidth: 1, borderColor: '#333',
+  },
+  btnNeutralTxt: { color: '#9a9a9a', fontSize: 14.5, fontWeight: '600' },
+  btnSave: {
+    flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center',
+    backgroundColor: '#1a4020', borderWidth: 1, borderColor: '#2a5c34',
+  },
+  btnSaveTxt: { color: '#4ade80', fontSize: 14.5, fontWeight: '700' },
+  btnDanger: {
+    flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center',
+    backgroundColor: '#3a1414', borderWidth: 1, borderColor: '#5c2323',
+  },
+  btnDangerTxt: { color: '#f87171', fontSize: 14.5, fontWeight: '700' },
+
+  // Delete confirmation
+  confirmScrim: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center',
+    padding: 24, borderRadius: 28,
+  },
+  confirmCard: {
+    width: '100%', backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: '#2e2e2e',
+    borderRadius: 16, padding: 18,
+  },
+  confirmTitle: { color: '#fff', fontSize: 15, fontWeight: '700', marginBottom: 8 },
+  confirmText:  { color: '#9a9a9a', fontSize: 12.5, lineHeight: 19 },
 });

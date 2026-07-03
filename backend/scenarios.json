@@ -1,0 +1,50 @@
+[
+  {
+    "id": "stranger-on-street",
+    "name": "Незнакомец на улице",
+    "file": "stranger-on-street.txt",
+    "builtIn": true
+  },
+  {
+    "id": "v-magazine",
+    "name": "В магазине",
+    "file": "v-magazine.txt",
+    "builtIn": true
+  },
+  {
+    "id": "v-restorane",
+    "name": "В ресторане",
+    "file": "v-restorane.txt",
+    "builtIn": true
+  },
+  {
+    "id": "v-banke",
+    "name": "В банке",
+    "file": "v-banke.txt",
+    "builtIn": true
+  },
+  {
+    "id": "v-bolnitse",
+    "name": "В больнице",
+    "file": "v-bolnitse.txt",
+    "builtIn": true
+  },
+  {
+    "id": "v-otele",
+    "name": "В отеле",
+    "file": "v-otele.txt",
+    "builtIn": true
+  },
+  {
+    "id": "v-transporte",
+    "name": "В транспорте",
+    "file": "v-transporte.txt",
+    "builtIn": true
+  },
+  {
+    "id": "v-vetklinike",
+    "name": "В ветеринарной клинике",
+    "file": "v-vetklinike.txt",
+    "builtIn": true
+  }
+]

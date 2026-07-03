@@ -54,42 +54,59 @@ npm run android                         # then rebuild
 
 ### Backend (`backend/server.js`)
 
-Single Express route `POST /translate` accepting `{ text, fromLang, toLang, context }`.
+`POST /translate` accepts `{ text, fromLang, toLang, context }` where `context` is a **scenario id** (not a display name).
 
 - **Language validation:** `fromLang` and `toLang` must be exactly `'русский'` or `'корейский'` (Russian words, not language codes)
-- **Prompt loading:** reads `backend/prompts/<scenario>.txt`, substitutes `{fromLang}` and `{toLang}` placeholders
-- **Security:** helmet, CORS (`origin: false`), rate limit (30 req/min), max text 1000 chars
+- **Prompt loading:** resolves `context` against the scenario registry (see below), reads `backend/prompts/<file>`, substitutes `{fromLang}` and `{toLang}` placeholders. If the id isn't registered, `context` is used verbatim as free-text context (backward-compat fallback).
+- **Security:** helmet, CORS (`origin: false`), rate limit (30 req/min, also applied to `/scenarios` and `/health`), max text 1000 chars
 - **Supabase logging:** if `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` are in `.env`, each translation is fire-and-forget inserted into the `translations` table
 - **Returns:** `{ translation }` or `{ error }` with appropriate HTTP status
 
-Scenario → prompt file mapping in `SCENARIO_FILES` constant at the top of `server.js`.
+**Scenario registry (`backend/scenarios.json`):** array of `{ id, name, file, builtIn }`. The backend is the source of truth — the frontend fetches this list on launch instead of storing it in AsyncStorage.
+
+- `GET /scenarios` → `[{ id, name, builtIn }]`
+- `GET /scenarios/:id` → `{ id, name, builtIn, prompt }` — reads the prompt file live off disk
+- `POST /scenarios` `{ name, prompt }` → creates a new `builtIn:false` entry. `id` is generated server-side by transliterating `name` (Cyrillic → Latin slug via the `TRANSLIT` map in `server.js`) and de-duplicated (`-2`, `-3`, ...); never trust a client-supplied id for the filename. Writes `backend/prompts/<id>.txt`.
+- `PUT /scenarios/:id` `{ name?, prompt? }` → edits in place; a `prompt` update overwrites the `.txt` file on disk. Works for built-in scenarios too (their prompts are editable, just not deletable).
+- `DELETE /scenarios/:id` → 403 if `builtIn:true`; otherwise removes the registry entry and its prompt file.
+- `GET /health` → cheap connectivity check via `openai.models.retrieve('gpt-4o')` (no chat-completion cost). `{ ok: true }` or `{ ok: false, error }`.
+
+**Windows/Git Bash gotcha:** inline `curl -d '{"name":"На рынке"}'` mangles Cyrillic through the Windows console codepage before it reaches Node — this looks like a server bug (garbled name, wrong slug) but isn't. Write the JSON body to a UTF-8 file and use `curl --data-binary @file` when testing manually.
 
 ### Frontend (`frontend/App.js`)
 
 Two screens managed via `screen` state (`'main'` | `'history'`).
 
 **Main screen layout (top → bottom):**
-1. Korean mic button + flip button (physical top, Korean person's side)
-2. Korean bubble (dark panel, text rotated 180° by default)
-3. Gutter: scenario selector + history button
-4. Russian bubble (dark panel)
-5. Russian mic button (physical bottom)
+1. Menu button — floating, physical top-left corner (`top: 58, left: 14`, sibling of the `KeyboardAvoidingView` so it isn't clipped by its `paddingTop`); opens a left drawer (Сценарии / История / Проверить связь)
+2. Korean mic button + flip button (physical top, Korean person's side)
+3. Korean bubble (dark panel, text rotated 180° by default)
+4. Gutter: scenario selector + history button
+5. Russian bubble (dark panel)
+6. Russian mic button + connection-test button (physical bottom) — the test button sits in the row's far corner (`position:absolute, right:14`), deliberately away from the mic so it can't be hit by accident
 
 **Key state:**
 - `koRotated` — boolean, controls 180° rotation of Korean panel; toggled by flip button; default `true`
 - `activeBubble` — `null | 'ru' | 'ko'` — which side is currently active
 - `activeBubbleRef` — `useRef` mirror of `activeBubble` for async callbacks
-- `dirRef` — mirrors `direction` state so speech-recognition event callbacks always read current direction without closure staleness
-- `histRef` — mirrors `history` state for async callbacks (same stale-closure reason)
+- `histRef` — mirrors `history` state for async callbacks (stale-closure reason)
+- `scenarioId` / `scenarioIdRef` — id of the active scenario (looked up from `scenarios` for display name); the ref mirror exists because `doTranslate` and `saveEntry` are read from the speech-recognition `'result'` event callback, which can otherwise close over a stale id
+- `scenarios` — `[{ id, name, builtIn }]`, fetched from `GET /scenarios` on mount; `FALLBACK_SCENARIOS` (hardcoded, matching the backend's seed data) is used until that resolves or if the backend is unreachable
+- `pinnedIds` — up to `MAX_PINNED` (3) scenario ids, persisted in `AsyncStorage` under `'translator_pinned_scenarios'`; pinned scenarios render in their own section above the rest in the picker sheet
 - `typingBubble` — `null | 'ru' | 'ko'` — which side is in text-input mode
 
 **Conversation flow:** idle → recording → translating → waiting → (direction flips) → idle
 
 **Korean typing overlay:** when `typingBubble === 'ko'`, a panel slides from the physical top of the screen so the Korean person can type without flipping the phone.
 
-**History:** saved to `AsyncStorage` under `'translation_history'`. On mount, entries older than 24 h are pruned. History screen: FlatList of chat bubbles — RU messages purple right, KO messages dark gray left.
+**History:** saved to `AsyncStorage` under `'translation_history'`, one array shared across all scenarios — each entry carries a `scenarioId`. On mount, entries older than 24 h are pruned. History screen filters by a `viewId` state (initialized from the main screen's current `scenarioId`), with a scenario chip + dropdown at the top to switch which scenario's history is displayed without leaving the screen. RU messages purple right, KO messages dark gray left.
 
-**Scenarios:** saved to `AsyncStorage` under `'translator_scenarios'`. 7 built-in + user-created. Deletable (user-created only).
+**Scenarios:** list comes from the backend (`GET /scenarios`), not AsyncStorage — see the backend section above for the registry and CRUD endpoints. The picker sheet (`showPicker` Modal) has three sub-views via `sheetView` state:
+- `'list'` — pinned section, then the rest; each row has a pin toggle (☆ `push-pin` icon), an edit (pencil) icon open to every scenario, and a delete icon shown only when `builtIn:false`
+- `'create'` — two fields, name + prompt, `POST /scenarios`
+- `'edit'` — fetches the live prompt via `GET /scenarios/:id`, saves via `PUT /scenarios/:id`
+
+Deleting asks for confirmation first: tapping the trash icon sets `deleteTarget`, which renders a small "Удалить сценарий? Да/Нет" card over the sheet instead of deleting immediately.
 
 ## Icons — Critical Implementation Detail
 
@@ -122,7 +139,7 @@ Font is loaded via `expo-font` config plugin in `app.json` (copies TTF to native
 }]
 ```
 
-**Icon names use hyphens** (not underscores): `volume-up`, `arrow-back`, `expand-more`, `screen-rotation`.
+**Icon names use hyphens** (not underscores): `volume-up`, `arrow-back`, `expand-more`, `screen-rotation`, `menu`, `push-pin`, `network-check`, `edit`, `list`. Before using a new glyph name, verify it exists in `frontend/node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/glyphmaps/MaterialIcons.json` — this is the classic Material Icons set, not Material Symbols, so newer/renamed icons may be missing.
 
 **Do NOT block render** on `fontsLoaded` — if font fails, app must still show. Remove any `if (!fontsLoaded) return null` guard.
 
