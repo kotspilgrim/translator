@@ -20,6 +20,7 @@ backend/auth.js           Signup/login/email-verification routes, requireAuth mi
 backend/supabaseClient.js Shared Supabase client (imported by server.js and auth.js)
 backend/migrations/       Hand-run SQL migrations (Supabase SQL editor — no migration runner)
 frontend/         React Native app (Expo SDK 52 + expo-speech-recognition)
+frontend/modules/mlkit-translate/  Local Expo module: on-device RU/KO translation via Google ML Kit
 ARCHITECTURE.md   C4 diagrams (context, containers, components, deployment)
 REQUIREMENTS.md   User Stories (US-01..US-11) and Use Cases (UC-01..UC-06)
 SECURITY_CHECKLIST.md  50-item vulnerability checklist, grouped by category, to test the app against
@@ -98,12 +99,14 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 
 ### Frontend (`frontend/App.js`)
 
-`screen` state machine: `'boot' | 'signin' | 'signup' | 'verify' | 'main' | 'history'`. On mount, `'boot'` reads `translator_auth_token` from `AsyncStorage`; if present it calls `GET /auth/me` to confirm the token still works (`'main'` on success, `'signin'` on a rejected/missing token — but if the backend is simply unreachable, it assumes the token is still good rather than force a re-login while offline). `SignInScreen`, `SignUpScreen`, `VerifyCodeScreen` are separate function components in this same file, following the `HistoryScreen` precedent (each takes `theme` as a prop and computes its own `c`/`S` via `useMemo(() => makeStyles(c, theme), [c, theme])`).
+`screen` state machine: `'boot' | 'signin' | 'signup' | 'verify' | 'main' | 'history'`. On mount, `'boot'` reads `translator_auth_token` from `AsyncStorage`; if present it calls `GET /auth/me` (8s `AbortController` timeout — a fully offline device must not hang here) to confirm the token still works (`'main'` on success, `'signin'` on a rejected/missing token — but if the backend is simply unreachable or the request times out, it assumes the token is still good rather than force a re-login while offline). `SignInScreen`, `SignUpScreen`, `VerifyCodeScreen` are separate function components in this same file, following the `HistoryScreen` precedent (each takes `theme` as a prop and computes its own `c`/`S` via `useMemo(() => makeStyles(c, theme), [c, theme])`).
 
-- **SignIn → signup link, or submits to `/auth/login`.** On `email_not_verified`, routes to `'verify'` instead of showing a bare error.
+- **SignIn → signup link, or submits to `/auth/login`.** On `email_not_verified`, routes to `'verify'` instead of showing a bare error. A third option, **"Продолжить как гость / без контекстного перевода"**, calls `onGuest` (→ `handleContinueAsGuest`) to skip auth entirely — see "Guest mode" below.
 - **SignUp** computes `checkPasswordRules(password)` live for the 4-bar strength meter + checklist (weak/medium/strong tiers — the design only shows the two extremes, medium is an interpolated fill-in). Submits to `/auth/signup` on success → `'verify'`.
 - **VerifyCode**'s 6-digit entry is *one* invisible `TextInput` (`maxLength={6}`, opacity 0, 1×1px, positioned absolute) whose value drives 6 visual boxes — far more reliable in RN than 6 separate refs with auto-advance focus. Auto-submits once 6 digits are entered.
 - `handleAuthSuccess(token, user)` stores the token in `AsyncStorage` and goes to `'main'`; `handleLogout()` clears it and returns to `'signin'`. The menu drawer's "Выйти" item isn't in the design (its menu drawer wasn't updated for a logged-in state) — added because there'd be no way to log out otherwise.
+
+**Guest mode:** `handleContinueAsGuest` sets `isGuest = true` and jumps straight to `'main'` — no token, no `/auth` call. `isGuestRef` mirrors it for the same stale-closure reason as `scenarioIdRef` (read below). A guest never gets scenario context: `openScenarioPicker` (see "Scenarios" below) refuses to open the picker for guests, the scenario row shows a fixed "Без сценария (гость)" label instead of the real scenario name, and `doTranslate` forces `context: null` for guests regardless of what `scenarioIdRef` holds — so even if a guest somehow still had a `scenarioId` selected, it would never reach the backend. The menu drawer shows "Гость" in place of the email and swaps "Выйти" for "Войти" (`handleGuestSignIn`, which just flips `isGuest` back to `false` and returns to `'signin'` — it does not touch `AUTH_TOKEN_KEY`, so if a real session's token was never cleared, going guest and back to sign-in does not log that session out).
 
 **Main screen layout (top → bottom):**
 1. Menu button — floating, physical top-left corner (`top: 58, left: 14`, sibling of the `KeyboardAvoidingView` so it isn't clipped by its `paddingTop`); opens a left drawer (Сценарии / История / Проверить связь)
@@ -122,6 +125,7 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 - `scenarios` — `[{ id, name, builtIn }]`, fetched from `GET /scenarios` on mount; `FALLBACK_SCENARIOS` (hardcoded, matching the backend's seed data) is used until that resolves or if the backend is unreachable
 - `pinnedIds` — up to `MAX_PINNED` (3) scenario ids, persisted in `AsyncStorage` under `'translator_pinned_scenarios'`; pinned scenarios render in their own section above the rest in the picker sheet
 - `typingBubble` — `null | 'ru' | 'ko'` — which side is in text-input mode
+- `isOnline` / `isOnlineRef` — connectivity state from `@react-native-community/netinfo`'s `NetInfo.addEventListener` (`state.isConnected && state.isInternetReachable !== false`); the ref mirror exists for the same reason as `scenarioIdRef` — `doTranslate` is read from the speech-recognition `'result'` event callback
 
 **Conversation flow:** idle → recording → translating → waiting → (direction flips) → idle
 
@@ -140,6 +144,8 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 - `'edit'` — fetches the live prompt via `GET /scenarios/:id`, saves via `PUT /scenarios/:id`
 
 Deleting asks for confirmation first: tapping the trash icon sets `deleteTarget`, which renders a small "Удалить сценарий? Да/Нет" card over the sheet instead of deleting immediately.
+
+**Scenario context requires an account and a live backend.** Every entry point into the picker (the scenario row's `onPress` and the menu drawer's "Сценарии" item) goes through `openScenarioPicker`, which blocks and shows an `Alert` instead of opening the sheet: "Только с аккаунтом" for guests, "Нет подключения" when `isOnline` is false. There's no third combined state — a guest is blocked regardless of connectivity, since scenario prompts are fetched/edited server-side either way.
 
 ## Theming (dark / light)
 
@@ -260,11 +266,32 @@ After changing icons, run `npx expo prebuild --platform android` to regenerate m
 - **JSX space matters:** `<MI name=` is valid; `<MIname=` is a SyntaxError — watch for this in editor paste
 - **ADB reverse** must be re-run every time the USB cable is reconnected
 - **Samsung Gauss / Galaxy AI** is NOT accessible from third-party apps — no public API or SDK exists
-- **Google ML Kit Translation** (`@react-native-ml-kit/translation`) is the practical on-device alternative for offline translation (supports RU↔KO, free, ~30 MB model download)
+- **All the `@react-native-ml-kit/*`-style npm wrappers for on-device translation are unfit to depend on**: the actively-maintained one (`@react-native-ml-kit/translate-text`) ships its own `⚠ Don't use this in production` warning and exposes no model-management API at all; the packages that *do* expose download/delete (`react-native-mlkit-translate`) haven't been touched in 5 years and predate autolinking. `frontend/modules/mlkit-translate/` talks to Google's own (stable, non-alpha) `com.google.mlkit:translate` Android SDK directly instead — see "Offline translation" below.
+- **Don't add `expo.autolinking.searchPaths` to `package.json`** to get a local module under `frontend/modules/` picked up — `expo-modules-autolinking`'s `nativeModulesDir` already defaults to `./modules` and merges it into the default search. Setting `searchPaths` explicitly *replaces* the default (which walks up `node_modules`) instead of adding to it, so every `node_modules`-installed Expo module (including `expo-modules-core` itself) stops resolving and the native build fails with `Unresolved reference: expo` in `MainActivity.kt`/`MainApplication.kt`. If a fresh local module isn't autolinking, look elsewhere first — it should just work.
+
+## Offline translation
+
+`frontend/modules/mlkit-translate/` is a **local Expo module** (Android-only, Kotlin) wrapping `com.google.mlkit:translate` directly — not a third-party RN wrapper (see "Known Lessons Learned" above for why). It exposes exactly four functions via `AsyncFunction`, bridged straight from `Task<T>.addOnSuccessListener/addOnFailureListener` to Expo's `Promise` (no `kotlinx-coroutines` dependency — earlier attempts at using `.await()` hit a Kotlin-metadata-version clash against this project's pinned Kotlin `1.9.25`, since `kotlinx-coroutines-play-services` 1.9+ requires Kotlin 2.x):
+
+- `isModelDownloaded(languageCode)`, `downloadModel(languageCode, requireWifi)`, `deleteModel(languageCode)` — language-pack lifecycle, driven from the "Языковые пакеты" screen (`LanguagePacksScreen` in `App.js`, reached from the menu drawer).
+- `translate(text, sourceLanguageCode, targetLanguageCode)` — assumes both models are already downloaded; it does **not** silently auto-download mid-translation (ML Kit's default would), since that would bypass the pack screen's Wi-Fi-only preference and use mobile data without asking.
+
+Language codes are plain ISO strings (`'ru'`, `'ko'`) — these already match the `sourceBubble` values used everywhere else in `App.js`, so no separate mapping table is needed; `TranslateLanguage.fromLanguageTag()` on the native side resolves them.
+
+**Fallback trigger:** two paths, both funnelling into the shared `applyOfflineFallback(text, sourceBubble)` helper. (1) If `isOnlineRef.current` is already `false` (NetInfo), `doTranslate` skips the `/translate` fetch entirely and goes straight to `offlineTranslate()` — this is what keeps a known-offline translation to roughly the ML Kit call's own latency instead of making the user wait out the 15s backend timeout. (2) If NetInfo *thinks* there's a connection but the fetch still fails or times out (its own 15s `AbortController`), the `catch` block falls back the same way — hybrid mode, exactly as this section used to describe as a roadmap item. Either way, if the on-device models aren't downloaded, the bubble shows a message pointing at the pack screen instead of failing silently.
+
+**What's different offline:** no scenario context (ML Kit has no prompt concept — it's a direct phrase-to-phrase model, not an LLM), and history entries get `offline: true` so `HistoryScreen` can show a small "офлайн ·" tag next to the timestamp.
+
+**Module scaffolding gotcha:** `npx create-expo-module --local` downloads the *current* `expo-module-template` from npm, which targets a newer Expo Modules Gradle convention (`plugins { id 'expo-module-gradle-plugin' }`) than what SDK 52's `expo-modules-core` (2.2.3, already vendored in this project) actually understands. Fresh local modules need their generated `android/build.gradle` rewritten to the older pattern every other module in `node_modules/expo-*/android/build.gradle` already uses (`apply from: ...ExpoModulesCorePlugin.gradle` + `applyKotlinExpoModulesCorePlugin()` + `useCoreDependencies()` + `useDefaultAndroidSdkVersions()`) — copy from an installed module like `expo-speech`, don't trust the freshly-scaffolded file as-is.
 
 ## Future Roadmap (not yet implemented)
 
 - **Play Store release:** `eas build --platform android --profile production` → upload AAB → Google Play Console
 - **OTA updates:** `eas update --branch production` for JS-only changes (no Play Store submission needed)
 - **Backend to cloud:** deploy `backend/` to Railway (`railway up`) to remove Tailscale dependency — set `BACKEND_URL` to public HTTPS domain
-- **Offline fallback:** hybrid mode — GPT-4o when online, ML Kit when offline
+- **iOS build:** the app is Android-only so far — `mlkit-translate` is a Kotlin/Android-only Expo module (no iOS implementation), and `app.json`/`eas.json` have no iOS config. Needs an iOS-side translation module (or an iOS-specific offline fallback) before `expo run:ios`/`eas build --platform ios` are viable.
+- **Real email delivery for signup verification codes:** `backend/auth.js`'s `signup`/`resend-code` handlers currently stub the send as `console.log` (see Auth section above) — swap in a provider (Resend/SendGrid/etc.), nothing else in the verification flow changes.
+- **Wire up `scenario_id`/`user_id` on translations:** the columns exist on the `translations` table since migration 001, but `/translate` doesn't require login or populate them yet (see "Explicitly not wired up yet" in the Auth section) — needed before per-user scenario history/analytics is possible.
+- **Additional translation language pairs:** both the backend prompt system (`fromLang`/`toLang` are validated against the literal strings `'русский'`/`'корейский'`) and the offline `mlkit-translate` module (hardcoded `'ru'`/`'ko'` codes) assume exactly one language pair — extending to more languages touches both sides, plus the scenario prompt templates and the UI's fixed RU-bottom/KO-top layout.
+- **Interface localization (i18n):** all UI copy in `frontend/App.js` is hardcoded Russian strings (button labels, alerts, placeholders) — no i18n library or string-table layer exists yet.
+- **Redesign the scenario-unavailable notification:** `openScenarioPicker`'s offline/guest blocks currently use React Native's native `Alert.alert` (system dialog, not themed) — the rest of the app avoids native components in favor of the custom dark/light design system (see Theming section), so this should eventually become a themed in-app card/toast instead.

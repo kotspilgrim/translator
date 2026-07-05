@@ -1,0 +1,31 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.mlkittranslate'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useDefaultAndroidSdkVersions()
+
+android {
+  namespace "expo.modules.mlkittranslate"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // Google's own on-device translation SDK — stable/production, unlike the
+  // JS wrapper packages on npm (all either alpha or years-stale), which is
+  // why this module talks to it directly instead of depending on one of those.
+  // No kotlinx-coroutines dependency: Task<T> callbacks are bridged straight
+  // to Expo's Promise (see resolveWith() in the module), which avoids a
+  // Kotlin-metadata-version clash with this project's pinned Kotlin 1.9.25.
+  implementation "com.google.mlkit:translate:17.0.3"
+}

@@ -2,8 +2,9 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, ActivityIndicator,
   ScrollView, FlatList, Modal, TextInput, Keyboard,
-  KeyboardAvoidingView, Platform, Animated, Easing,
+  KeyboardAvoidingView, Platform, Animated, Easing, Alert,
 } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 import { StatusBar } from 'expo-status-bar';
@@ -29,6 +30,7 @@ import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
+import MlkitTranslate from './modules/mlkit-translate/src/MlkitTranslateModule';
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const BACKEND_URL   = 'http://100.68.162.96:3000';
@@ -296,12 +298,134 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme })
                   <Text style={[S.chatOrig, { color: textColor }]}>{item.originalText}</Text>
                   <MI name="south" size={14} color={sepColor} style={S.chatSep} />
                   <Text style={[S.chatTrans, { color: transColor }]}>{item.translatedText}</Text>
-                  <Text style={[S.chatTime, { color: timeColor }]}>{fmtTime(item.timestamp)}</Text>
+                  <Text style={[S.chatTime, { color: timeColor }]}>
+                    {item.offline ? 'офлайн · ' : ''}{fmtTime(item.timestamp)}
+                  </Text>
                 </View>
               </View>
             );
           }}
         />
+      )}
+    </View>
+  );
+}
+
+// ── Language packs (offline translation) ────────────────────────────────────
+const OFFLINE_LANGUAGES = [
+  { code: 'ru', label: 'Русский' },
+  { code: 'ko', label: '한국어' },
+];
+
+function LanguagePacksScreen({ theme, onBack }) {
+  const c = COLORS[theme];
+  const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+
+  const [status, setStatus]   = useState({}); // { ru: bool, ko: bool }
+  const [busy, setBusy]       = useState({}); // { ru: 'download'|'delete', ko: ... }
+  const [wifiOnly, setWifiOnly] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+
+  const refreshStatus = async () => {
+    const entries = await Promise.all(
+      OFFLINE_LANGUAGES.map(async l => [l.code, await MlkitTranslate.isModelDownloaded(l.code)])
+    );
+    setStatus(Object.fromEntries(entries));
+  };
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try { await refreshStatus(); } catch { setError('Не удалось проверить статус пакетов'); }
+      setLoading(false);
+    })();
+  }, []);
+
+  const handleDownload = async code => {
+    setError('');
+    setBusy(b => ({ ...b, [code]: 'download' }));
+    try {
+      await MlkitTranslate.downloadModel(code, wifiOnly);
+      await refreshStatus();
+    } catch {
+      setError('Не удалось скачать пакет — проверьте соединение');
+    }
+    setBusy(b => ({ ...b, [code]: null }));
+  };
+
+  const handleDelete = async code => {
+    setError('');
+    setBusy(b => ({ ...b, [code]: 'delete' }));
+    try {
+      await MlkitTranslate.deleteModel(code);
+      await refreshStatus();
+    } catch {
+      setError('Не удалось удалить пакет');
+    }
+    setBusy(b => ({ ...b, [code]: null }));
+  };
+
+  return (
+    <View style={S.histCont}>
+      <StatusBar style={c.statusBarStyle} />
+      <View style={S.histHead}>
+        <TouchableOpacity onPress={onBack} style={S.backBtn}>
+          <MI name="arrow-back" size={24} color={c.textStrong} />
+        </TouchableOpacity>
+        <Text style={S.histTitle}>Языковые пакеты</Text>
+      </View>
+
+      <Text style={S.packsHint}>
+        Скачайте пакеты обоих языков, чтобы переводить без интернета и без учёта сценария —
+        приложение переключится на них автоматически, если сервер недоступен.
+      </Text>
+
+      {loading ? (
+        <ActivityIndicator color={c.linkColor} style={{ marginTop: 30 }} />
+      ) : (
+        <View style={S.packsList}>
+          {OFFLINE_LANGUAGES.map(l => {
+            const downloaded = !!status[l.code];
+            const busyAction = busy[l.code];
+            return (
+              <View key={l.code} style={S.packRow}>
+                <View style={S.packInfo}>
+                  <Text style={S.packName}>{l.label}</Text>
+                  <Text style={[S.packStatus, downloaded && { color: c.btnSaveText }]}>
+                    {downloaded ? 'Скачан' : 'Не скачан'}
+                  </Text>
+                </View>
+                {busyAction ? (
+                  <ActivityIndicator color={c.linkColor} />
+                ) : downloaded ? (
+                  <TouchableOpacity style={S.packBtnDanger} onPress={() => handleDelete(l.code)}>
+                    <MI name="delete-outline" size={18} color={c.btnDangerText} />
+                    <Text style={S.packBtnDangerTxt}>Удалить</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={S.packBtnSave} onPress={() => handleDownload(l.code)}>
+                    <MI name="download" size={18} color={c.btnSaveText} />
+                    <Text style={S.packBtnSaveTxt}>Скачать</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })}
+
+          <TouchableOpacity style={S.packWifiRow} onPress={() => setWifiOnly(w => !w)}>
+            <MI name={wifiOnly ? 'check-box' : 'check-box-outline-blank'} size={20} color={c.iconMid} />
+            <MI name="wifi" size={16} color={c.iconDim} />
+            <Text style={S.packWifiTxt}>Скачивать только по Wi-Fi</Text>
+          </TouchableOpacity>
+
+          {!!error && (
+            <View style={S.authErrorRow}>
+              <MI name="error" size={14} color={c.fieldError} />
+              <Text style={S.authErrorTxt}>{error}</Text>
+            </View>
+          )}
+        </View>
       )}
     </View>
   );
@@ -328,7 +452,7 @@ function AuthThemeToggle({ theme, toggleTheme, c, S }) {
 }
 
 // ── Sign in ──────────────────────────────────────────────────────────────────
-function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGoToSignUp }) {
+function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGoToSignUp, onGuest }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
 
@@ -427,6 +551,11 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
           <Text style={S.authLinkBold}>Зарегистрироваться</Text>
         </TouchableOpacity>
       </View>
+
+      <TouchableOpacity style={S.authGuestBtn} onPress={onGuest}>
+        <Text style={S.authGuestBtnTxt}>Продолжить как гость</Text>
+        <Text style={S.authGuestBtnSub}>без контекстного перевода</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -721,9 +850,23 @@ export default function App() {
   }, [fontsLoaded, fontError]);
 
   // 'boot' while checking for a stored session, then one of
-  // 'signin' | 'signup' | 'verify' | 'main' | 'history'
+  // 'signin' | 'signup' | 'verify' | 'main' | 'history' | 'packs'
   const [screen,     setScreen]     = useState('boot');
   const [showMenu,   setShowMenu]   = useState(false);
+
+  // ── Connectivity ─────────────────────────────────────────────────────────────
+  // isOnlineRef mirrors isOnline for doTranslate/openScenarioPicker, which can
+  // be called from stale closures (see scenarioIdRef precedent below).
+  const [isOnline, setIsOnline] = useState(true);
+  const isOnlineRef = useRef(true);
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener(state => {
+      const online = !!state.isConnected && state.isInternetReachable !== false;
+      isOnlineRef.current = online;
+      setIsOnline(online);
+    });
+    return unsubscribe;
+  }, []);
 
   // ── Theme ───────────────────────────────────────────────────────────────────
   const [theme, setTheme] = useState('dark');
@@ -748,6 +891,25 @@ export default function App() {
   // ── Auth ────────────────────────────────────────────────────────────────────
   const [authUser,     setAuthUser]     = useState(null);
   const [pendingVerify, setPendingVerify] = useState(null); // { userId, email }
+  // Guests skip login entirely and get straight to on-device translation —
+  // no scenario context, since that requires an account (see openScenarioPicker).
+  const [isGuest, setIsGuest] = useState(false);
+  // Mirrors isGuest for doTranslate, which is read from the speech recognition
+  // 'result' event callback and can otherwise close over a stale value
+  // (same reasoning as scenarioIdRef/activeBubbleRef below).
+  const isGuestRef = useRef(false);
+  useEffect(() => { isGuestRef.current = isGuest; }, [isGuest]);
+
+  const handleContinueAsGuest = () => {
+    setIsGuest(true);
+    setScreen('main');
+  };
+
+  const handleGuestSignIn = () => {
+    setShowMenu(false);
+    setIsGuest(false);
+    setScreen('signin');
+  };
 
   useEffect(() => {
     (async () => {
@@ -755,9 +917,17 @@ export default function App() {
       try { token = await AsyncStorage.getItem(AUTH_TOKEN_KEY); } catch {}
       if (!token) { setScreen('signin'); return; }
       try {
+        // Without an explicit timeout, a fully offline device (no Wi-Fi, no
+        // mobile data — exactly the case offline translation exists for)
+        // leaves this fetch hanging on the OS route-lookup for a long time
+        // instead of failing fast, stalling the boot screen indefinitely.
+        const ctrl = new AbortController();
+        const tid  = setTimeout(() => ctrl.abort(), 8000);
         const resp = await fetch(`${BACKEND_URL}/auth/me`, {
           headers: { Authorization: `Bearer ${token}` },
+          signal: ctrl.signal,
         });
+        clearTimeout(tid);
         if (resp.ok) {
           const data = await resp.json();
           setAuthUser(data.user);
@@ -794,6 +964,21 @@ export default function App() {
   const scenarioIdRef = useRef(scenarioId);
   useEffect(() => { scenarioIdRef.current = scenarioId; }, [scenarioId]);
   const scenario = scenarios.find(s => s.id === scenarioId)?.name || '';
+
+  // Scenario context requires an account (guests) and a live backend
+  // (scenario prompts are fetched/edited server-side) — block the picker
+  // and explain why instead of opening a sheet that can't do anything useful.
+  const openScenarioPicker = () => {
+    if (isGuest) {
+      Alert.alert('Только с аккаунтом', 'Войдите в аккаунт, чтобы использовать перевод по сценариям.');
+      return;
+    }
+    if (!isOnline) {
+      Alert.alert('Нет подключения', 'Сценарии доступны только при наличии интернета.');
+      return;
+    }
+    setShowPicker(true);
+  };
 
   const [pinnedIds, setPinnedIds] = useState([]);
 
@@ -1132,15 +1317,62 @@ export default function App() {
   useSpeechRecognitionEvent('error', () => { setRecognizing(false); killSilenceTimer(); });
 
   // ── Translation ────────────────────────────────────────────────────────────
+  // Offline fallback: ML Kit translates directly between the bubble sides —
+  // 'ru'/'ko' are already valid ISO codes, no mapping needed. No scenario
+  // context is applied (ML Kit has no concept of a prompt), per the ask that
+  // offline mode work "without internet and without context".
+  const offlineTranslate = async (text, sourceBubble) => {
+    const sourceLang = sourceBubble;
+    const targetLang = sourceBubble === 'ru' ? 'ko' : 'ru';
+    const [sourceReady, targetReady] = await Promise.all([
+      MlkitTranslate.isModelDownloaded(sourceLang),
+      MlkitTranslate.isModelDownloaded(targetLang),
+    ]);
+    if (!sourceReady || !targetReady) {
+      throw new Error('offline model not downloaded');
+    }
+    return MlkitTranslate.translate(text, sourceLang, targetLang);
+  };
+
+  const applyOfflineFallback = async (text, sourceBubble) => {
+    try {
+      const translation = await offlineTranslate(text, sourceBubble);
+      if (sourceBubble === 'ru') setKoText(translation);
+      else                       setRuText(translation);
+      await saveEntry({
+        id: String(Date.now()), originalText: text,
+        translatedText: translation,
+        direction: sourceBubble === 'ru' ? 'ru-ko' : 'ko-ru',
+        scenarioId: scenarioIdRef.current,
+        offline: true,
+        timestamp: Date.now(),
+      });
+      const next = sourceBubble === 'ru' ? 'ko' : 'ru';
+      setActiveBubble(next);
+      activeBubbleRef.current = next;
+    } catch {
+      const msg = 'Нет связи, офлайн-пакет не скачан. Скачайте его в меню → Языковые пакеты.';
+      if (sourceBubble === 'ru') setKoText(msg); else setRuText(msg);
+    }
+  };
+
   const doTranslate = async (text, fromLang, toLang, sourceBubble) => {
     setTranslating(true);
+    if (!isOnlineRef.current) {
+      // Known offline (NetInfo) — skip the network round trip entirely so
+      // on-device translation lands in ~1s instead of waiting out the
+      // backend timeout below before falling back.
+      await applyOfflineFallback(text, sourceBubble);
+      setTranslating(false);
+      return;
+    }
     const ctrl = new AbortController();
     const tid  = setTimeout(() => ctrl.abort(), 15000);
     try {
       const resp = await fetch(`${BACKEND_URL}/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:   JSON.stringify({ text, fromLang, toLang, context: scenarioIdRef.current }),
+        body:   JSON.stringify({ text, fromLang, toLang, context: isGuestRef.current ? null : scenarioIdRef.current }),
         signal: ctrl.signal,
       });
       clearTimeout(tid);
@@ -1159,7 +1391,12 @@ export default function App() {
         setActiveBubble(next);
         activeBubbleRef.current = next;
       }
-    } catch { clearTimeout(tid); }
+    } catch {
+      // Backend unreachable/timed out — fall back to on-device translation
+      // rather than just failing silently (hybrid mode from the roadmap).
+      clearTimeout(tid);
+      await applyOfflineFallback(text, sourceBubble);
+    }
     setTranslating(false);
   };
 
@@ -1255,6 +1492,7 @@ export default function App() {
         onSuccess={handleAuthSuccess}
         onNeedsVerification={(userId, email) => { setPendingVerify({ userId, email }); setScreen('verify'); }}
         onGoToSignUp={() => setScreen('signup')}
+        onGuest={handleContinueAsGuest}
       />
     );
   }
@@ -1292,6 +1530,10 @@ export default function App() {
         theme={theme}
       />
     );
+  }
+
+  if (screen === 'packs') {
+    return <LanguagePacksScreen theme={theme} onBack={() => setScreen('main')} />;
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -1366,8 +1608,8 @@ export default function App() {
 
         {/* ── Gutter: scenario + history between bubbles ── */}
         <View style={S.gutter}>
-          <TouchableOpacity style={S.scenBtn} onPress={() => setShowPicker(true)}>
-            <Text style={S.scenTxt} numberOfLines={1}>{scenario}</Text>
+          <TouchableOpacity style={S.scenBtn} onPress={openScenarioPicker}>
+            <Text style={S.scenTxt} numberOfLines={1}>{isGuest ? 'Без сценария (гость)' : scenario}</Text>
             <MI name="expand-more" size={20} color={c.iconDim} />
           </TouchableOpacity>
           <TouchableOpacity style={S.histBtn} onPress={() => setScreen('history')}>
@@ -1494,9 +1736,9 @@ export default function App() {
         >
           <View style={S.menuDrawer} onStartShouldSetResponder={() => true}>
             <Text style={S.menuBrand}>RU ⇄ KO Переводчик</Text>
-            <Text style={S.menuSub}>{authUser?.email || BACKEND_URL.replace('http://', '')}</Text>
+            <Text style={S.menuSub}>{isGuest ? 'Гость' : (authUser?.email || BACKEND_URL.replace('http://', ''))}</Text>
 
-            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setShowPicker(true); }}>
+            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); openScenarioPicker(); }}>
               <MI name="list" size={20} color={c.menuIcon} />
               <Text style={S.menuItemTxt}>Сценарии</Text>
             </TouchableOpacity>
@@ -1508,16 +1750,27 @@ export default function App() {
               <MI name="network-check" size={20} color={c.menuIcon} />
               <Text style={S.menuItemTxt}>Проверить связь</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setScreen('packs'); }}>
+              <MI name="download" size={20} color={c.menuIcon} />
+              <Text style={S.menuItemTxt}>Языковые пакеты</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={[S.menuItem, S.menuItemDivider]} onPress={() => { setShowMenu(false); toggleTheme(); }}>
               <MI name={theme === 'dark' ? 'light-mode' : 'dark-mode'} size={20} color={c.themeToggleIcon} />
               <Text style={S.menuItemTxt}>{theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</Text>
             </TouchableOpacity>
             {/* Not in the design (its menu drawer wasn't updated for a logged-in
                 state) — added because without it there'd be no way to log out. */}
-            <TouchableOpacity style={S.menuItem} onPress={handleLogout}>
-              <MI name="logout" size={20} color={c.menuIcon} />
-              <Text style={S.menuItemTxt}>Выйти</Text>
-            </TouchableOpacity>
+            {isGuest ? (
+              <TouchableOpacity style={S.menuItem} onPress={handleGuestSignIn}>
+                <MI name="login" size={20} color={c.menuIcon} />
+                <Text style={S.menuItemTxt}>Войти</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={S.menuItem} onPress={handleLogout}>
+                <MI name="logout" size={20} color={c.menuIcon} />
+                <Text style={S.menuItemTxt}>Выйти</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </TouchableOpacity>
       )}
@@ -2042,6 +2295,13 @@ function makeStyles(c, theme) {
   authFooterRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
   authFooterTxt: { color: c.iconDim, fontSize: 14 },
 
+  authGuestBtn: {
+    marginTop: 22, paddingVertical: 14, borderRadius: 12, alignItems: 'center',
+    borderWidth: 1, borderColor: c.authFieldBorder,
+  },
+  authGuestBtnTxt: { color: c.textStrong, fontSize: 15, fontWeight: '600' },
+  authGuestBtnSub: { color: c.iconDim, fontSize: 12, marginTop: 2 },
+
   // Password strength meter (sign up)
   strengthBarsRow: { flexDirection: 'row', gap: 5, marginBottom: 8 },
   strengthBar:     { flex: 1, height: 4, borderRadius: 2 },
@@ -2071,5 +2331,31 @@ function makeStyles(c, theme) {
   codeHiddenInput: { position: 'absolute', opacity: 0, height: 1, width: 1 },
 
   resendTxt: { textAlign: 'center', color: c.iconDim, fontSize: 13 },
+
+  // Language packs (offline translation)
+  packsHint: { color: c.iconDim, fontSize: 12.5, lineHeight: 19, padding: 16, paddingBottom: 4 },
+  packsList: { padding: 16, gap: 10 },
+  packRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: c.fieldBg, borderWidth: 1, borderColor: c.fieldBorder,
+    borderRadius: 12, padding: 14,
+  },
+  packInfo:   { gap: 3 },
+  packName:   { color: c.textStrong, fontSize: 15, fontWeight: '600' },
+  packStatus: { color: c.iconDim, fontSize: 12 },
+  packBtnSave: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: c.btnSaveBg, borderWidth: 1, borderColor: c.btnSaveBorder,
+    borderRadius: 10, paddingVertical: 9, paddingHorizontal: 13,
+  },
+  packBtnSaveTxt: { color: c.btnSaveText, fontSize: 13, fontWeight: '600' },
+  packBtnDanger: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: c.btnDangerBg, borderWidth: 1, borderColor: c.btnDangerBorder,
+    borderRadius: 10, paddingVertical: 9, paddingHorizontal: 13,
+  },
+  packBtnDangerTxt: { color: c.btnDangerText, fontSize: 13, fontWeight: '600' },
+  packWifiRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, padding: 4 },
+  packWifiTxt: { color: c.scenText, fontSize: 13 },
   });
 }
