@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+
+
 ## Project Overview
 
 A bilingual Russian-Korean voice translator. Two people hold one phone between them — the Russian speaker at the bottom, the Korean speaker at the top. Each speaks (or types) in their own language; speech is recognized on-device, sent to a Node.js backend, translated by GPT-4o with optional scenario context, and displayed on screen. After each translation the direction auto-flips so the other person can respond immediately.
@@ -12,6 +14,9 @@ A bilingual Russian-Korean voice translator. Two people hold one phone between t
 
 ```
 backend/          Node.js/Express translation server (OpenAI GPT-4o)
+backend/auth.js           Signup/login/email-verification routes, requireAuth middleware
+backend/supabaseClient.js Shared Supabase client (imported by server.js and auth.js)
+backend/migrations/       Hand-run SQL migrations (Supabase SQL editor — no migration runner)
 frontend/         React Native app (Expo SDK 52 + expo-speech-recognition)
 ARCHITECTURE.md   C4 diagrams (context, containers, components, deployment)
 REQUIREMENTS.md   User Stories (US-01..US-11) and Use Cases (UC-01..UC-06)
@@ -73,9 +78,29 @@ npm run android                         # then rebuild
 
 **Windows/Git Bash gotcha:** inline `curl -d '{"name":"На рынке"}'` mangles Cyrillic through the Windows console codepage before it reaches Node — this looks like a server bug (garbled name, wrong slug) but isn't. Write the JSON body to a UTF-8 file and use `curl --data-binary @file` when testing manually.
 
+### Auth (`backend/auth.js`, mounted at `/auth`)
+
+Email + password signup with email-code verification, backed by Supabase Postgres tables created by `backend/migrations/001_users_scenarios_auth.sql` and `002_email_verification_stub.sql` (run by hand in the Supabase SQL editor — this repo has no migration runner). `backend/supabaseClient.js` holds the one shared `supabase` client (`server.js` and `auth.js` both import it, avoiding a circular require). Every `/auth` route 503s up front if Supabase isn't configured — unlike translation logging, auth isn't optional.
+
+- `POST /auth/signup` `{ email, password, name? }` — validates email format and 4 password rules (≥8 chars, upper+lower case, digit, special char — same rule set `frontend/App.js`'s `checkPasswordRules` mirrors for live UI feedback). Hashes with `bcryptjs`, generates a 6-digit code (10 min TTL, 5 max attempts), **stubs the email send as a `console.log`** — the code is only ever written to `users.verification_code`, never returned in the API response. Signing up again with an unverified email resumes that row instead of erroring, so an abandoned signup isn't a dead end.
+- `POST /auth/verify-email` `{ userId, code }` → sets `email_verified = true`, clears the code fields, returns `{ token, user }`.
+- `POST /auth/resend-code` `{ userId }` — regenerates the code, resets attempts.
+- `POST /auth/login` `{ email, password }` → `403 { error: 'email_not_verified', userId }` if the account hasn't verified yet (frontend uses this to redirect into the code screen instead of a dead-end error); otherwise `{ token, user }`.
+- `GET /auth/me` — `requireAuth` middleware (reads `Authorization: Bearer <jwt>`) → current user; used by the frontend on boot to confirm a stored token is still valid. `auth.js` exports `requireAuth` for future routes that need to gate on login.
+- JWT signed with `JWT_SECRET` (`.env`), 30-day expiry. `authLimiter` in `server.js` (10 req/min) is stricter than the 30/min translate limiter — brute-forcing a password or a 6-digit code is a different threat profile.
+
+**Explicitly not wired up yet:** `/translate`, `/scenarios`, and history don't require login or filter by `user_id`/`scenario_id` — the columns exist on `translations` (migration 001) but nothing populates them. That's a deliberate follow-up, not an oversight; see the plan history in this repo's conversation log if you need the reasoning.
+
+**Real email delivery is stubbed.** Swapping in a provider (Resend/SendGrid/etc.) only touches the `console.log(...)` calls in `auth.js`'s `signup`/`resend-code` handlers — nothing else in the flow changes.
+
 ### Frontend (`frontend/App.js`)
 
-Two screens managed via `screen` state (`'main'` | `'history'`).
+`screen` state machine: `'boot' | 'signin' | 'signup' | 'verify' | 'main' | 'history'`. On mount, `'boot'` reads `translator_auth_token` from `AsyncStorage`; if present it calls `GET /auth/me` to confirm the token still works (`'main'` on success, `'signin'` on a rejected/missing token — but if the backend is simply unreachable, it assumes the token is still good rather than force a re-login while offline). `SignInScreen`, `SignUpScreen`, `VerifyCodeScreen` are separate function components in this same file, following the `HistoryScreen` precedent (each takes `theme` as a prop and computes its own `c`/`S` via `useMemo(() => makeStyles(c, theme), [c, theme])`).
+
+- **SignIn → signup link, or submits to `/auth/login`.** On `email_not_verified`, routes to `'verify'` instead of showing a bare error.
+- **SignUp** computes `checkPasswordRules(password)` live for the 4-bar strength meter + checklist (weak/medium/strong tiers — the design only shows the two extremes, medium is an interpolated fill-in). Submits to `/auth/signup` on success → `'verify'`.
+- **VerifyCode**'s 6-digit entry is *one* invisible `TextInput` (`maxLength={6}`, opacity 0, 1×1px, positioned absolute) whose value drives 6 visual boxes — far more reliable in RN than 6 separate refs with auto-advance focus. Auto-submits once 6 digits are entered.
+- `handleAuthSuccess(token, user)` stores the token in `AsyncStorage` and goes to `'main'`; `handleLogout()` clears it and returns to `'signin'`. The menu drawer's "Выйти" item isn't in the design (its menu drawer wasn't updated for a logged-in state) — added because there'd be no way to log out otherwise.
 
 **Main screen layout (top → bottom):**
 1. Menu button — floating, physical top-left corner (`top: 58, left: 14`, sibling of the `KeyboardAvoidingView` so it isn't clipped by its `paddingTop`); opens a left drawer (Сценарии / История / Проверить связь)
@@ -174,8 +199,9 @@ const BACKEND_URL = 'http://100.68.162.96:3000'; // Tailscale IP
 **Backend `.env`** must have:
 ```
 OPENAI_API_KEY=sk-...
-SUPABASE_URL=https://...supabase.co        # optional
-SUPABASE_SERVICE_KEY=eyJ...               # optional
+SUPABASE_URL=https://...supabase.co        # required for /auth, optional for translation logging
+SUPABASE_SERVICE_KEY=eyJ...               # required for /auth, optional for translation logging
+JWT_SECRET=...                            # required for /auth — any long random string
 ```
 
 ## ADB — Development Tips

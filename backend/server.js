@@ -7,7 +7,8 @@ const rateLimit    = require('express-rate-limit');
 const OpenAI       = require('openai');
 const fs           = require('fs');
 const path         = require('path');
-const { createClient } = require('@supabase/supabase-js');
+const supabase     = require('./supabaseClient');
+const authRouter   = require('./auth');
 
 const app  = express();
 const PORT = 3000;
@@ -25,11 +26,18 @@ const limiter = rateLimit({
 });
 app.use('/translate', limiter);
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Brute-forcing a password or a 6-digit code is a different threat profile
+// than translation traffic, so /auth gets its own, stricter limit.
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много запросов, попробуйте позже' },
+});
+app.use('/auth', authLimiter, authRouter);
 
-const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY
-  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
-  : null;
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Scenarios registry: backend/scenarios.json maps { id, name, file, builtIn }.
 // Each entry's prompt lives in backend/prompts/<file>. Built-in scenarios ship

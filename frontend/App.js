@@ -35,6 +35,7 @@ const BACKEND_URL   = 'http://100.68.162.96:3000';
 const HISTORY_KEY   = 'translation_history';
 const PINNED_KEY    = 'translator_pinned_scenarios';
 const THEME_KEY     = 'translator_theme';
+const AUTH_TOKEN_KEY = 'translator_auth_token';
 const HISTORY_TTL   = 24 * 60 * 60 * 1000;
 const SILENCE_MS    = 7000;
 const MAX_PINNED    = 3;
@@ -61,6 +62,20 @@ const fmtTime = ts => {
   const d = new Date(ts);
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 };
+
+// Mirrors backend/auth.js's checkPasswordRules exactly — this copy is only
+// for live UI feedback, the backend re-validates regardless.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function checkPasswordRules(pw) {
+  const password = typeof pw === 'string' ? pw : '';
+  return {
+    minLength:  password.length >= 8,
+    upperLower: /[a-z]/.test(password) && /[A-Z]/.test(password),
+    digit:      /\d/.test(password),
+    special:    /[^A-Za-z0-9]/.test(password),
+  };
+}
+const passwordRulesPassed = rules => Object.values(rules).filter(Boolean).length;
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 // Two full palettes (dark = the app's original look, unchanged; light = the
@@ -126,6 +141,15 @@ const COLORS = {
     confirmTitle: '#ffffff', confirmText: '#9a9a9a',
 
     koBackdrop: 'rgba(0,0,0,0.65)',
+
+    // Auth screens (sign in / sign up / email code)
+    linkColor: '#8ab4f8', warnColor: '#eab308',
+    authBg: '#0f0f0f', authFieldBg: '#161616', authFieldBorder: '#2a2a2a',
+    authFieldBorderError: '#ef4444',
+    authPrimaryBg: '#ffffff', authPrimaryText: '#0f0f0f',
+    authPrimaryBgDisabled: '#2a2a2a', authPrimaryTextDisabled: '#666',
+    codeBoxBg: '#161616', codeBoxBorder: '#3a3a3a', codeBoxBorderActive: '#8ab4f8',
+    codeBoxBgError: '#1e1414', codeBoxBorderError: '#ef4444',
   },
   light: {
     statusBarStyle: 'dark',
@@ -186,6 +210,15 @@ const COLORS = {
     confirmTitle: '#111111', confirmText: '#666',
 
     koBackdrop: 'rgba(0,0,0,0.3)',
+
+    // Auth screens (sign in / sign up / email code)
+    linkColor: '#2563eb', warnColor: '#d97706',
+    authBg: '#f4f4f7', authFieldBg: '#ffffff', authFieldBorder: '#e2e2e8',
+    authFieldBorderError: '#ef4444',
+    authPrimaryBg: '#111111', authPrimaryText: '#ffffff',
+    authPrimaryBgDisabled: '#e2e2e8', authPrimaryTextDisabled: '#999',
+    codeBoxBg: '#ffffff', codeBoxBorder: '#d8d8de', codeBoxBorderActive: '#2563eb',
+    codeBoxBgError: '#fdecec', codeBoxBorderError: '#ef4444',
   },
 };
 
@@ -274,6 +307,408 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme })
   );
 }
 
+// ── Auth: shared bits ────────────────────────────────────────────────────────
+// The app icon (dark navy "가" over near-white "Я") is a fixed brand mark,
+// not a themed surface — same two colors in both themes.
+function AuthLogo({ S }) {
+  return (
+    <View style={S.authLogoBox}>
+      <View style={S.authLogoTop}><Text style={S.authLogoTopTxt}>가</Text></View>
+      <View style={S.authLogoBottom}><Text style={S.authLogoBottomTxt}>Я</Text></View>
+    </View>
+  );
+}
+
+function AuthThemeToggle({ theme, toggleTheme, c, S }) {
+  return (
+    <TouchableOpacity style={S.authThemeToggle} onPress={toggleTheme} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+      <MI name={theme === 'dark' ? 'light-mode' : 'dark-mode'} size={18} color={c.themeToggleIcon} />
+    </TouchableOpacity>
+  );
+}
+
+// ── Sign in ──────────────────────────────────────────────────────────────────
+function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGoToSignUp }) {
+  const c = COLORS[theme];
+  const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+
+  const [email,        setEmail]        = useState('');
+  const [password,     setPassword]     = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading,      setLoading]      = useState(false);
+  const [error,        setError]        = useState('');
+
+  const handleSubmit = async () => {
+    if (loading) return;
+    setError('');
+    setLoading(true);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        onSuccess(data.token, data.user);
+      } else if (data.error === 'email_not_verified') {
+        onNeedsVerification(data.userId, email.trim());
+      } else {
+        setError(data.error || 'Не удалось войти');
+      }
+    } catch {
+      setError('Нет соединения с сервером');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <View style={S.authScreen}>
+      <StatusBar style={c.statusBarStyle} />
+      <AuthThemeToggle theme={theme} toggleTheme={toggleTheme} c={c} S={S} />
+
+      <View style={S.authLogoWrap}>
+        <AuthLogo S={S} />
+        <Text style={S.authTitle}>С возвращением</Text>
+        <Text style={S.authSubtitle}>Войдите, чтобы продолжить</Text>
+      </View>
+
+      <Text style={S.authFieldLbl}>Email</Text>
+      <View style={S.authFieldBox}>
+        <TextInput
+          style={S.authFieldInput}
+          value={email}
+          onChangeText={setEmail}
+          placeholder="anna@example.com"
+          placeholderTextColor={c.fieldPh}
+          autoCapitalize="none"
+          keyboardType="email-address"
+        />
+      </View>
+
+      <Text style={S.authFieldLbl}>Пароль</Text>
+      <View style={S.authFieldBox}>
+        <TextInput
+          style={S.authFieldInput}
+          value={password}
+          onChangeText={setPassword}
+          placeholder="••••••••••"
+          placeholderTextColor={c.fieldPh}
+          secureTextEntry={!showPassword}
+        />
+        <TouchableOpacity onPress={() => setShowPassword(v => !v)} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <MI name={showPassword ? 'visibility' : 'visibility-off'} size={20} color={c.iconDim} />
+        </TouchableOpacity>
+      </View>
+
+      {!!error && (
+        <View style={S.authErrorRow}>
+          <MI name="error" size={14} color={c.fieldError} />
+          <Text style={S.authErrorTxt}>{error}</Text>
+        </View>
+      )}
+
+      {/* No reset flow yet — plain label, not a dead-end tap target */}
+      <Text style={[S.authLink, S.authLinkEnd]}>Забыли пароль?</Text>
+
+      <TouchableOpacity
+        style={[S.authPrimaryBtn, loading && S.authPrimaryBtnDisabled]}
+        onPress={handleSubmit}
+        disabled={loading}
+      >
+        {loading
+          ? <ActivityIndicator color={c.authPrimaryText} />
+          : <Text style={S.authPrimaryBtnTxt}>Войти</Text>}
+      </TouchableOpacity>
+
+      <View style={S.authFooterRow}>
+        <Text style={S.authFooterTxt}>Нет аккаунта? </Text>
+        <TouchableOpacity onPress={onGoToSignUp}>
+          <Text style={S.authLinkBold}>Зарегистрироваться</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+// ── Sign up ──────────────────────────────────────────────────────────────────
+function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn }) {
+  const c = COLORS[theme];
+  const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+
+  const [email,        setEmail]        = useState('');
+  const [password,     setPassword]     = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [touched,      setTouched]      = useState(false);
+  const [loading,      setLoading]      = useState(false);
+  const [error,        setError]        = useState('');
+
+  const rules  = checkPasswordRules(password);
+  const passed = passwordRulesPassed(rules);
+  // 0-1 rules -> weak, 2-3 -> medium, 4 -> strong. Only the two extremes are
+  // shown in the design (A2 all-green, A3 mostly-red) — medium is my own
+  // reasonable fill-in for the tier the design doesn't depict.
+  const tierColor = passed <= 1 ? c.fieldError : passed <= 3 ? c.warnColor : c.btnSaveText;
+  const tierLabel = passed <= 1 ? 'Слабый пароль' : passed <= 3 ? 'Средний пароль' : 'Надёжный пароль';
+  const emailValid = EMAIL_RE.test(email.trim());
+  const canSubmit  = emailValid && passed === 4 && !loading;
+
+  const requirements = [
+    { key: 'minLength',  label: 'Минимум 8 символов' },
+    { key: 'upperLower', label: 'Заглавная и строчная буквы' },
+    { key: 'digit',      label: 'Хотя бы одна цифра' },
+    { key: 'special',    label: 'Спецсимвол (!@#$…)' },
+  ];
+
+  const handleSubmit = async () => {
+    setTouched(true);
+    if (!canSubmit) return;
+    setError('');
+    setLoading(true);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        onNeedsVerification(data.userId, email.trim());
+      } else {
+        setError(data.error || 'Не удалось создать аккаунт');
+      }
+    } catch {
+      setError('Нет соединения с сервером');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <View style={S.authScreen}>
+      <StatusBar style={c.statusBarStyle} />
+      <View style={S.authHeaderRow}>
+        <TouchableOpacity onPress={onGoToSignIn} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <MI name="arrow-back" size={24} color={c.backIcon} />
+        </TouchableOpacity>
+        <Text style={S.authHeaderTitle}>Создать аккаунт</Text>
+        <View style={{ marginLeft: 'auto' }}>
+          <AuthThemeToggle theme={theme} toggleTheme={toggleTheme} c={c} S={S} />
+        </View>
+      </View>
+
+      <Text style={S.authFieldLbl}>Email</Text>
+      <View style={[S.authFieldBox, touched && !emailValid && S.authFieldBoxError]}>
+        <TextInput
+          style={S.authFieldInput}
+          value={email}
+          onChangeText={setEmail}
+          placeholder="anna@example.com"
+          placeholderTextColor={c.fieldPh}
+          autoCapitalize="none"
+          keyboardType="email-address"
+        />
+      </View>
+      {touched && !emailValid && (
+        <View style={S.authErrorRow}>
+          <MI name="error" size={14} color={c.fieldError} />
+          <Text style={S.authErrorTxt}>Введите корректный email</Text>
+        </View>
+      )}
+
+      <Text style={S.authFieldLbl}>Пароль</Text>
+      <View style={[S.authFieldBox, touched && passed < 4 && S.authFieldBoxError]}>
+        <TextInput
+          style={S.authFieldInput}
+          value={password}
+          onChangeText={setPassword}
+          placeholder="••••••••••••"
+          placeholderTextColor={c.fieldPh}
+          secureTextEntry={!showPassword}
+        />
+        <TouchableOpacity onPress={() => setShowPassword(v => !v)} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <MI name={showPassword ? 'visibility' : 'visibility-off'} size={20} color={c.iconDim} />
+        </TouchableOpacity>
+      </View>
+
+      <View style={S.strengthBarsRow}>
+        {[0, 1, 2, 3].map(i => (
+          <View key={i} style={[S.strengthBar, { backgroundColor: i < passed ? tierColor : c.authFieldBorder }]} />
+        ))}
+      </View>
+      {!!password && <Text style={[S.strengthLabel, { color: tierColor }]}>{tierLabel}</Text>}
+
+      <View style={S.reqList}>
+        {requirements.map(r => {
+          const met = rules[r.key];
+          const show = !!password; // neutral/dim until the user starts typing
+          return (
+            <View key={r.key} style={S.reqRow}>
+              <MI
+                name={show ? (met ? 'check-circle' : 'cancel') : 'check-circle'}
+                size={17}
+                color={show ? (met ? c.btnSaveText : c.fieldError) : c.iconDim}
+              />
+              <Text style={[S.reqTxt, { color: show ? (met ? c.iconDim : c.fieldError) : c.iconDim }]}>
+                {r.label}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+
+      {!!error && (
+        <View style={S.authErrorRow}>
+          <MI name="error" size={14} color={c.fieldError} />
+          <Text style={S.authErrorTxt}>{error}</Text>
+        </View>
+      )}
+
+      <TouchableOpacity
+        style={[S.authPrimaryBtn, !canSubmit && S.authPrimaryBtnDisabled]}
+        onPress={handleSubmit}
+        disabled={loading}
+      >
+        {loading
+          ? <ActivityIndicator color={c.authPrimaryText} />
+          : <Text style={[S.authPrimaryBtnTxt, !canSubmit && S.authPrimaryBtnTxtDisabled]}>Продолжить</Text>}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// ── Email verification code ─────────────────────────────────────────────────
+const CODE_LENGTH   = 6;
+const RESEND_COOLDOWN_S = 60;
+
+function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack }) {
+  const c = COLORS[theme];
+  const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+
+  const [code,       setCode]       = useState('');
+  const [loading,    setLoading]    = useState(false);
+  const [error,      setError]      = useState('');
+  const [attemptsLeft, setAttemptsLeft] = useState(null);
+  const [cooldown,   setCooldown]   = useState(0);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown(s => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
+
+  const submitCode = async fullCode => {
+    setLoading(true);
+    setError('');
+    try {
+      const resp = await fetch(`${BACKEND_URL}/auth/verify-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, code: fullCode }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        onSuccess(data.token, data.user);
+      } else {
+        setError(data.error || 'Неверный код');
+        if (typeof data.attemptsRemaining === 'number') setAttemptsLeft(data.attemptsRemaining);
+        setCode('');
+      }
+    } catch {
+      setError('Нет соединения с сервером');
+    }
+    setLoading(false);
+  };
+
+  const handleChangeCode = text => {
+    const digits = text.replace(/\D/g, '').slice(0, CODE_LENGTH);
+    setCode(digits);
+    if (digits.length === CODE_LENGTH) submitCode(digits);
+  };
+
+  const handleResend = async () => {
+    if (cooldown > 0 || loading) return;
+    setError('');
+    setCode('');
+    try {
+      const resp = await fetch(`${BACKEND_URL}/auth/resend-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+      if (resp.ok) { setAttemptsLeft(null); setCooldown(RESEND_COOLDOWN_S); }
+    } catch {}
+  };
+
+  const hasError = !!error;
+
+  return (
+    <View style={S.authScreen}>
+      <StatusBar style={c.statusBarStyle} />
+      <View style={[S.authHeaderRow, { marginBottom: 34 }]}>
+        <TouchableOpacity onPress={onBack} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <MI name="arrow-back" size={24} color={c.backIcon} />
+        </TouchableOpacity>
+      </View>
+
+      <View style={S.codeHintIcon}>
+        <MI name="mark-email-read" size={28} color={c.linkColor} />
+      </View>
+      <Text style={S.authTitle}>Введите код</Text>
+      <Text style={S.authSubtitle}>
+        Мы отправили 6-значный код на{'\n'}
+        <Text style={{ color: c.textStrong }}>{email}</Text>
+      </Text>
+
+      {/* Tapping the boxes focuses the single hidden input below them —
+          far more reliable in RN than juggling 6 refs with auto-advance. */}
+      <TouchableOpacity activeOpacity={1} onPress={() => inputRef.current?.focus()} style={S.codeRow}>
+        {Array.from({ length: CODE_LENGTH }).map((_, i) => {
+          const digit = code[i];
+          const isCursor = i === code.length && !hasError;
+          return (
+            <View key={i} style={[S.codeBox, hasError && S.codeBoxError, isCursor && S.codeBoxActive]}>
+              {digit ? (
+                <Text style={[S.codeDigit, hasError && { color: c.fieldError }]}>{digit}</Text>
+              ) : isCursor ? (
+                <View style={S.codeCursor} />
+              ) : null}
+            </View>
+          );
+        })}
+      </TouchableOpacity>
+      <TextInput
+        ref={inputRef}
+        value={code}
+        onChangeText={handleChangeCode}
+        keyboardType="number-pad"
+        maxLength={CODE_LENGTH}
+        style={S.codeHiddenInput}
+        autoFocus
+      />
+
+      {hasError && (
+        <View style={[S.authErrorRow, { marginBottom: 24 }]}>
+          <MI name="error" size={14} color={c.fieldError} />
+          <Text style={S.authErrorTxt}>
+            {error}{attemptsLeft != null ? `. Осталось ${attemptsLeft} попытки` : ''}
+          </Text>
+        </View>
+      )}
+
+      {loading && <ActivityIndicator color={c.linkColor} style={{ marginBottom: 20 }} />}
+
+      {cooldown > 0 ? (
+        <Text style={S.resendTxt}>Отправить повторно через <Text style={{ color: c.textStrong }}>0:{String(cooldown).padStart(2, '0')}</Text></Text>
+      ) : (
+        <TouchableOpacity onPress={handleResend}>
+          <Text style={[S.resendTxt, S.authLink]}>Отправить код повторно</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
 // ── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [fontsLoaded, fontError] = useFonts({
@@ -285,7 +720,9 @@ export default function App() {
     if (fontsLoaded) console.log('FONT OK');
   }, [fontsLoaded, fontError]);
 
-  const [screen,     setScreen]     = useState('main');
+  // 'boot' while checking for a stored session, then one of
+  // 'signin' | 'signup' | 'verify' | 'main' | 'history'
+  const [screen,     setScreen]     = useState('boot');
   const [showMenu,   setShowMenu]   = useState(false);
 
   // ── Theme ───────────────────────────────────────────────────────────────────
@@ -307,6 +744,49 @@ export default function App() {
   };
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+
+  // ── Auth ────────────────────────────────────────────────────────────────────
+  const [authUser,     setAuthUser]     = useState(null);
+  const [pendingVerify, setPendingVerify] = useState(null); // { userId, email }
+
+  useEffect(() => {
+    (async () => {
+      let token = null;
+      try { token = await AsyncStorage.getItem(AUTH_TOKEN_KEY); } catch {}
+      if (!token) { setScreen('signin'); return; }
+      try {
+        const resp = await fetch(`${BACKEND_URL}/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setAuthUser(data.user);
+          setScreen('main');
+        } else {
+          await AsyncStorage.removeItem(AUTH_TOKEN_KEY).catch(() => {});
+          setScreen('signin');
+        }
+      } catch {
+        // Can't confirm the token without the backend — assume it's still
+        // good rather than force a re-login just because we're offline.
+        setScreen('main');
+      }
+    })();
+  }, []);
+
+  const handleAuthSuccess = async (token, user) => {
+    setAuthUser(user);
+    setPendingVerify(null);
+    try { await AsyncStorage.setItem(AUTH_TOKEN_KEY, token); } catch {}
+    setScreen('main');
+  };
+
+  const handleLogout = async () => {
+    setShowMenu(false);
+    setAuthUser(null);
+    try { await AsyncStorage.removeItem(AUTH_TOKEN_KEY); } catch {}
+    setScreen('signin');
+  };
 
   // ── Scenarios (source of truth: backend) ───────────────────────────────────
   const [scenarios,   setScenarios]   = useState(FALLBACK_SCENARIOS);
@@ -758,6 +1238,50 @@ export default function App() {
 
   const micRecording = bubble => recognizing && activeBubble === bubble;
 
+  if (screen === 'boot') {
+    return (
+      <View style={[S.authScreen, { alignItems: 'center', justifyContent: 'center' }]}>
+        <StatusBar style={c.statusBarStyle} />
+        <ActivityIndicator color={c.linkColor} size="large" />
+      </View>
+    );
+  }
+
+  if (screen === 'signin') {
+    return (
+      <SignInScreen
+        theme={theme}
+        toggleTheme={toggleTheme}
+        onSuccess={handleAuthSuccess}
+        onNeedsVerification={(userId, email) => { setPendingVerify({ userId, email }); setScreen('verify'); }}
+        onGoToSignUp={() => setScreen('signup')}
+      />
+    );
+  }
+
+  if (screen === 'signup') {
+    return (
+      <SignUpScreen
+        theme={theme}
+        toggleTheme={toggleTheme}
+        onNeedsVerification={(userId, email) => { setPendingVerify({ userId, email }); setScreen('verify'); }}
+        onGoToSignIn={() => setScreen('signin')}
+      />
+    );
+  }
+
+  if (screen === 'verify' && pendingVerify) {
+    return (
+      <VerifyCodeScreen
+        theme={theme}
+        userId={pendingVerify.userId}
+        email={pendingVerify.email}
+        onSuccess={handleAuthSuccess}
+        onBack={() => { setPendingVerify(null); setScreen('signin'); }}
+      />
+    );
+  }
+
   if (screen === 'history') {
     return (
       <HistoryScreen
@@ -970,7 +1494,7 @@ export default function App() {
         >
           <View style={S.menuDrawer} onStartShouldSetResponder={() => true}>
             <Text style={S.menuBrand}>RU ⇄ KO Переводчик</Text>
-            <Text style={S.menuSub}>{BACKEND_URL.replace('http://', '')}</Text>
+            <Text style={S.menuSub}>{authUser?.email || BACKEND_URL.replace('http://', '')}</Text>
 
             <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setShowPicker(true); }}>
               <MI name="list" size={20} color={c.menuIcon} />
@@ -987,6 +1511,12 @@ export default function App() {
             <TouchableOpacity style={[S.menuItem, S.menuItemDivider]} onPress={() => { setShowMenu(false); toggleTheme(); }}>
               <MI name={theme === 'dark' ? 'light-mode' : 'dark-mode'} size={20} color={c.themeToggleIcon} />
               <Text style={S.menuItemTxt}>{theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</Text>
+            </TouchableOpacity>
+            {/* Not in the design (its menu drawer wasn't updated for a logged-in
+                state) — added because without it there'd be no way to log out. */}
+            <TouchableOpacity style={S.menuItem} onPress={handleLogout}>
+              <MI name="logout" size={20} color={c.menuIcon} />
+              <Text style={S.menuItemTxt}>Выйти</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1466,5 +1996,80 @@ function makeStyles(c, theme) {
   },
   confirmTitle: { color: c.confirmTitle, fontSize: 15, fontWeight: '700', marginBottom: 8 },
   confirmText:  { color: c.confirmText, fontSize: 12.5, lineHeight: 19 },
+
+  // ── Auth screens ────────────────────────────────────────────────────────
+  authScreen: { flex: 1, backgroundColor: c.authBg, paddingTop: 78, paddingHorizontal: 26 },
+  authThemeToggle: {
+    position: 'absolute', top: 22, right: 24,
+    width: 32, height: 32, alignItems: 'center', justifyContent: 'center',
+  },
+  authLogoWrap: { alignItems: 'center', marginBottom: 38 },
+  authLogoBox: { width: 64, height: 64, borderRadius: 18, overflow: 'hidden', marginBottom: 16 },
+  authLogoTop:     { flex: 1, backgroundColor: '#0f172a', alignItems: 'center', justifyContent: 'center', transform: [{ rotate: '180deg' }] },
+  authLogoTopTxt:  { color: '#38bdf8', fontSize: 22, fontWeight: '900' },
+  authLogoBottom:    { flex: 1, backgroundColor: '#f8fafc', alignItems: 'center', justifyContent: 'center' },
+  authLogoBottomTxt: { color: '#0f172a', fontSize: 22, fontWeight: '800' },
+  authTitle:    { color: c.textStrong, fontSize: 22, fontWeight: '700', textAlign: 'center' },
+  authSubtitle: { color: c.iconDim, fontSize: 13, marginTop: 4, textAlign: 'center', lineHeight: 20 },
+
+  authHeaderRow:   { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 28 },
+  authHeaderTitle: { color: c.textStrong, fontSize: 20, fontWeight: '700' },
+
+  authFieldLbl: { color: c.fieldLbl, fontSize: 12, marginBottom: 7 },
+  authFieldBox: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: c.authFieldBg, borderWidth: 1, borderColor: c.authFieldBorder,
+    borderRadius: 12, paddingHorizontal: 15, paddingVertical: 14, marginBottom: 16,
+  },
+  authFieldBoxError: { borderColor: c.authFieldBorderError, marginBottom: 7 },
+  authFieldInput: { flex: 1, color: c.textStrong, fontSize: 15, padding: 0 },
+
+  authErrorRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 16 },
+  authErrorTxt: { color: c.fieldError, fontSize: 12, flexShrink: 1 },
+
+  authLink:    { color: c.linkColor, fontSize: 13 },
+  authLinkEnd: { alignSelf: 'flex-end', marginBottom: 26 },
+  authLinkBold:{ color: c.linkColor, fontSize: 14, fontWeight: '600' },
+
+  authPrimaryBtn: {
+    paddingVertical: 15, borderRadius: 12, alignItems: 'center',
+    backgroundColor: c.authPrimaryBg, marginBottom: 18,
+  },
+  authPrimaryBtnDisabled:     { backgroundColor: c.authPrimaryBgDisabled },
+  authPrimaryBtnTxt:          { color: c.authPrimaryText, fontSize: 16, fontWeight: '700' },
+  authPrimaryBtnTxtDisabled:  { color: c.authPrimaryTextDisabled },
+
+  authFooterRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
+  authFooterTxt: { color: c.iconDim, fontSize: 14 },
+
+  // Password strength meter (sign up)
+  strengthBarsRow: { flexDirection: 'row', gap: 5, marginBottom: 8 },
+  strengthBar:     { flex: 1, height: 4, borderRadius: 2 },
+  strengthLabel:   { fontSize: 12, marginBottom: 14 },
+  reqList: { gap: 8, marginBottom: 26 },
+  reqRow:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  reqTxt:  { fontSize: 13 },
+
+  // Email verification code
+  codeHintIcon: {
+    width: 56, height: 56, borderRadius: 16, backgroundColor: c.authFieldBg,
+    borderWidth: 1, borderColor: c.authFieldBorder, alignItems: 'center', justifyContent: 'center',
+    marginBottom: 22,
+  },
+  codeRow: { flexDirection: 'row', gap: 9, marginTop: 30, marginBottom: 26 },
+  codeBox: {
+    flex: 1, aspectRatio: 1, backgroundColor: c.codeBoxBg, borderWidth: 1,
+    borderColor: c.codeBoxBorder, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+  },
+  codeBoxActive: { borderWidth: 2, borderColor: c.codeBoxBorderActive },
+  codeBoxError:  { backgroundColor: c.codeBoxBgError, borderColor: c.codeBoxBorderError },
+  codeDigit:  { color: c.textStrong, fontSize: 24, fontWeight: '600' },
+  codeCursor: { width: 2, height: 24, backgroundColor: c.linkColor },
+  // Off-screen but focusable — the 6 boxes above are pure display, driven by
+  // this single input's value, which is far more reliable in RN than
+  // juggling 6 separate refs with auto-advance focus logic.
+  codeHiddenInput: { position: 'absolute', opacity: 0, height: 1, width: 1 },
+
+  resendTxt: { textAlign: 'center', color: c.iconDim, fontSize: 13 },
   });
 }
