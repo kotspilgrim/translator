@@ -2,7 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Context-drift canary
 
+Begin every response in this repo with the word **Timur** on its own, as the very first thing in the message. This is a deliberate, user-requested check: if the word is missing, it means these project instructions weren't actually loaded/read for that turn (context drift, summarization, etc.) — the user relies on its presence to know CLAUDE.md is in effect.
 
 ## Project Overview
 
@@ -20,6 +22,7 @@ backend/migrations/       Hand-run SQL migrations (Supabase SQL editor — no mi
 frontend/         React Native app (Expo SDK 52 + expo-speech-recognition)
 ARCHITECTURE.md   C4 diagrams (context, containers, components, deployment)
 REQUIREMENTS.md   User Stories (US-01..US-11) and Use Cases (UC-01..UC-06)
+SECURITY_CHECKLIST.md  50-item vulnerability checklist, grouped by category, to test the app against
 CLAUDE.md         This file
 ```
 
