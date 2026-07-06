@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, ActivityIndicator,
   ScrollView, FlatList, Modal, TextInput, Keyboard,
-  KeyboardAvoidingView, Platform, Animated, Easing,
+  KeyboardAvoidingView, Platform, Animated, Easing, useWindowDimensions,
 } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -897,6 +897,15 @@ export default function App() {
   const [screen,     setScreen]     = useState('boot');
   const [showMenu,   setShowMenu]   = useState(false);
 
+  // Numeric (not flex:1) cap for the scenario create/edit form's scrollable
+  // area — `sheet` only has maxHeight (hugs content, no fixed height), so a
+  // flex:1 child has no determinate space to fill and collapses to zero.
+  // A concrete pixel maxHeight sidesteps that: short content still hugs
+  // (ScrollView sizes to content up to this cap), long content scrolls
+  // internally while Отмена/Создать stay pinned below, always reachable.
+  const { height: windowHeight } = useWindowDimensions();
+  const formScrollMaxHeight = Math.round(windowHeight * 0.45);
+
   // ── Connectivity ─────────────────────────────────────────────────────────────
   // isOnlineRef mirrors isOnline for doTranslate/openScenarioPicker, which can
   // be called from stale closures (see scenarioIdRef precedent below).
@@ -1129,6 +1138,10 @@ export default function App() {
   // 'ru' → TextInput inside Russian bubble
   // 'ko' → overlay panel at physical top of screen (keyboard-from-top effect)
   const [typingBubble, setTypingBubble] = useState(null);
+  // Mirrors typingBubble for the keyboardDidHide listener below, which is
+  // registered once on mount and would otherwise close over a stale null.
+  const typingBubbleRef = useRef(null);
+  useEffect(() => { typingBubbleRef.current = typingBubble; }, [typingBubble]);
 
   // Prevents re-opening typing mode right after closing via onBlur (Russian bubble)
   const justClosedRef   = useRef(false);
@@ -1206,7 +1219,15 @@ export default function App() {
     return null;
   };
 
-  useEffect(() => { fetchScenarios(); }, []);
+  // Re-fetches whenever authUser changes (initial null → resolved user on
+  // boot, or null → user on login, or user → null on logout) — not just once
+  // on mount. Without this, the boot-time /auth/me check (async, network
+  // round trip) races this effect: fetchScenarios sees authTokenRef.current
+  // still null and fetches without the JWT, so it gets only the 8 built-ins,
+  // and — since nothing ever re-triggered it — that's what stays in state
+  // even after the token is confirmed and set, silently hiding every custom
+  // scenario the logged-in user owns.
+  useEffect(() => { fetchScenarios(); }, [authUser]);
 
   // ── Pinned scenarios (local, max 3) ─────────────────────────────────────────
   useEffect(() => {
@@ -1217,6 +1238,24 @@ export default function App() {
       } catch {}
     })();
   }, []);
+
+  // Prunes pinned ids that no longer match any fetched scenario — e.g. ones
+  // saved before scenario storage moved to Supabase (server.js: file-based
+  // string slugs → scenarios.js: real uuids), or a pinned custom scenario
+  // someone else deleted. Without this, stale entries permanently occupy
+  // MAX_PINNED slots (never displayed, since nothing matches) while blocking
+  // any new pin — `prev.length >= MAX_PINNED` in togglePin doesn't care
+  // whether those ids still resolve to anything real.
+  useEffect(() => {
+    if (!scenarios.length) return;
+    setPinnedIds(prev => {
+      const valid = prev.filter(id => scenarios.some(s => s.id === id));
+      if (valid.length !== prev.length) {
+        AsyncStorage.setItem(PINNED_KEY, JSON.stringify(valid)).catch(() => {});
+      }
+      return valid;
+    });
+  }, [scenarios]);
 
   const togglePin = id => {
     setPinnedIds(prev => {
@@ -1527,6 +1566,19 @@ export default function App() {
     justClosedTimer.current = setTimeout(() => { justClosedRef.current = false; }, 350);
   }, []);
 
+  // Android's hardware back button (and some keyboards' own dismiss gesture)
+  // hides the keyboard without blurring the focused TextInput, so the
+  // TextInput's own onBlur never fires and typingBubble is left stuck at
+  // 'ru' — the KO bubble/mic rows stay hidden even though the keyboard is
+  // gone. Listening for the OS-level hide event closes typing mode
+  // regardless of how the keyboard went away.
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidHide', () => {
+      if (typingBubbleRef.current) closeTypingMode();
+    });
+    return () => sub.remove();
+  }, [closeTypingMode]);
+
   const handleBubbleTap = bubble => {
     if (recognizing || translating) return;
 
@@ -1645,69 +1697,76 @@ export default function App() {
       <StatusBar style={c.statusBarStyle} />
 
       <KeyboardAvoidingView
-        style={S.kav}
+        style={[S.kav, typingBubble === 'ru' && S.kavTypingRu]}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        {/* ── Korean mic — physically at very top ── */}
-        <View style={S.koMicRow}>
-          <TouchableOpacity
-            style={[S.micBtn, micRecording('ko') && S.micBtnRec, translating && S.micBtnDim]}
-            onPress={() => handleMic('ko')}
-            disabled={translating}
-          >
-            <AnimatedMI
-              name={micRecording('ko') ? 'stop' : 'mic'}
-              size={26} color={micRecording('ko') ? c.micRecIcon : c.micIcon}
-              style={{ transform: [{ rotate: koFlipIconRotate }] }}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity style={S.flipBtn} onPress={() => setKoRotated(r => !r)}>
-            <MI name="screen-rotation" size={20} color={c.iconMid} />
-          </TouchableOpacity>
-        </View>
+        {/* ── Korean mic — physically at very top ──
+             Hidden while typing into the RU bubble: the Korean side is
+             irrelevant mid-typing, and hiding it (plus its bubble below)
+             lets the RU bubble grow into that space for long text. */}
+        {typingBubble !== 'ru' && (
+          <View style={S.koMicRow}>
+            <TouchableOpacity
+              style={[S.micBtn, micRecording('ko') && S.micBtnRec, translating && S.micBtnDim]}
+              onPress={() => handleMic('ko')}
+              disabled={translating}
+            >
+              <AnimatedMI
+                name={micRecording('ko') ? 'stop' : 'mic'}
+                size={26} color={micRecording('ko') ? c.micRecIcon : c.micIcon}
+                style={{ transform: [{ rotate: koFlipIconRotate }] }}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity style={S.flipBtn} onPress={() => setKoRotated(r => !r)}>
+              <MI name="screen-rotation" size={20} color={c.iconMid} />
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* ── Korean bubble (rotated 180° for face-to-face) — flips over the
              horizontal axis, like a card turning top-to-bottom ── */}
-        <AnimatedTouchable
-          style={[
-            S.bubble,
-            activeBubble === 'ko' && S.bubbleActive,
-            { transform: [{ perspective: 1000 }, { rotateY: koFlipBubbleY }, { rotateX: koFlipBubbleX }] },
-          ]}
-          onPress={() => handleBubbleTap('ko')}
-          activeOpacity={0.95}
-        >
-          <View style={S.bubbleBody}>
-            {translating && activeBubble === 'ru' ? (
-              <ActivityIndicator color={c.testChecking} size="large" />
-            ) : koShowWait ? (
-              <Text style={S.bubbleWaitPh}>{PH_KO_WAIT}</Text>
-            ) : koText ? (
-              <ScrollView contentContainerStyle={S.bubbleScroll} showsVerticalScrollIndicator={false}>
-                <Text style={S.bubbleTxt}>{koText}</Text>
-              </ScrollView>
-            ) : (
-              <Text style={S.bubblePh}>{koPlaceholder}</Text>
-            )}
-          </View>
-          {/* clear — top-right in rotated space */}
-          <TouchableOpacity
-            style={S.clearBtn}
-            onPress={() => setKoText('')}
-            hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+        {typingBubble !== 'ru' && (
+          <AnimatedTouchable
+            style={[
+              S.bubble,
+              activeBubble === 'ko' && S.bubbleActive,
+              { transform: [{ perspective: 1000 }, { rotateY: koFlipBubbleY }, { rotateX: koFlipBubbleX }] },
+            ]}
+            onPress={() => handleBubbleTap('ko')}
+            activeOpacity={0.95}
           >
-            <MI name="close" size={16} color={c.iconDim} />
-          </TouchableOpacity>
-          {/* TTS — top-left in rotated space */}
-          <TouchableOpacity
-            style={[S.ttsBtn, !koText && S.ttsBtnDim]}
-            onPress={() => handleSpeak(koText, 'ko-KR')}
-            disabled={!koText}
-            hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-          >
-            <MI name="volume-up" size={16} color={c.iconMid} />
-          </TouchableOpacity>
-        </AnimatedTouchable>
+            <View style={S.bubbleBody}>
+              {translating && activeBubble === 'ru' ? (
+                <ActivityIndicator color={c.testChecking} size="large" />
+              ) : koShowWait ? (
+                <Text style={S.bubbleWaitPh}>{PH_KO_WAIT}</Text>
+              ) : koText ? (
+                <ScrollView contentContainerStyle={S.bubbleScroll} showsVerticalScrollIndicator={false}>
+                  <Text style={S.bubbleTxt}>{koText}</Text>
+                </ScrollView>
+              ) : (
+                <Text style={S.bubblePh}>{koPlaceholder}</Text>
+              )}
+            </View>
+            {/* clear — top-right in rotated space */}
+            <TouchableOpacity
+              style={S.clearBtn}
+              onPress={() => setKoText('')}
+              hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+            >
+              <MI name="close" size={16} color={c.iconDim} />
+            </TouchableOpacity>
+            {/* TTS — top-left in rotated space */}
+            <TouchableOpacity
+              style={[S.ttsBtn, !koText && S.ttsBtnDim]}
+              onPress={() => handleSpeak(koText, 'ko-KR')}
+              disabled={!koText}
+              hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+            >
+              <MI name="volume-up" size={16} color={c.iconMid} />
+            </TouchableOpacity>
+          </AnimatedTouchable>
+        )}
 
         {/* ── Gutter: scenario + history between bubbles ── */}
         <View style={S.gutter}>
@@ -1781,55 +1840,60 @@ export default function App() {
           </TouchableOpacity>
         </TouchableOpacity>
 
-        {/* ── Russian mic — physically at bottom ── */}
-        <View style={S.ruMicRow}>
-          <TouchableOpacity
-            style={[S.micBtn, micRecording('ru') && S.micBtnRec, translating && S.micBtnDim]}
-            onPress={() => handleMic('ru')}
-            disabled={translating}
-          >
-            <MI
-              name={micRecording('ru') ? 'stop' : 'mic'}
-              size={26} color={micRecording('ru') ? c.micRecIcon : c.micIcon}
-            />
-          </TouchableOpacity>
+        {/* ── Russian mic — physically at bottom ──
+             Hidden while typing: recording and typing are mutually exclusive
+             input modes, and hiding this row gives the RU bubble above the
+             full remaining height for comfortable long-text editing. */}
+        {typingBubble !== 'ru' && (
+          <View style={S.ruMicRow}>
+            <TouchableOpacity
+              style={[S.micBtn, micRecording('ru') && S.micBtnRec, translating && S.micBtnDim]}
+              onPress={() => handleMic('ru')}
+              disabled={translating}
+            >
+              <MI
+                name={micRecording('ru') ? 'stop' : 'mic'}
+                size={26} color={micRecording('ru') ? c.micRecIcon : c.micIcon}
+              />
+            </TouchableOpacity>
 
-          {/* Test connection — kept in the corner, away from the mic, so it can't be hit by accident */}
-          <TouchableOpacity
-            style={[
-              S.testBtn,
-              connStatus === 'ok'       && S.testBtnOk,
-              connStatus === 'bad'      && S.testBtnBad,
-              connStatus === 'checking' && S.testBtnChecking,
-            ]}
-            onPress={testConnection}
-            disabled={connStatus === 'checking'}
-          >
-            <MI
-              name="network-check"
-              size={16}
-              color={
-                connStatus === 'ok'       ? c.testOk :
-                connStatus === 'bad'      ? c.testBad :
-                connStatus === 'checking' ? c.testChecking : c.testIconIdle
-              }
-            />
-            {connStatus !== 'idle' && (
-              <View style={S.testPill}>
-                <Text
-                  numberOfLines={1}
-                  style={[
-                    S.testPillTxt,
-                    connStatus === 'ok'  && S.testPillOk,
-                    connStatus === 'bad' && S.testPillBad,
-                  ]}
-                >
-                  {connMsg}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        </View>
+            {/* Test connection — kept in the corner, away from the mic, so it can't be hit by accident */}
+            <TouchableOpacity
+              style={[
+                S.testBtn,
+                connStatus === 'ok'       && S.testBtnOk,
+                connStatus === 'bad'      && S.testBtnBad,
+                connStatus === 'checking' && S.testBtnChecking,
+              ]}
+              onPress={testConnection}
+              disabled={connStatus === 'checking'}
+            >
+              <MI
+                name="network-check"
+                size={16}
+                color={
+                  connStatus === 'ok'       ? c.testOk :
+                  connStatus === 'bad'      ? c.testBad :
+                  connStatus === 'checking' ? c.testChecking : c.testIconIdle
+                }
+              />
+              {connStatus !== 'idle' && (
+                <View style={S.testPill}>
+                  <Text
+                    numberOfLines={1}
+                    style={[
+                      S.testPillTxt,
+                      connStatus === 'ok'  && S.testPillOk,
+                      connStatus === 'bad' && S.testPillBad,
+                    ]}
+                  >
+                    {connMsg}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
       </KeyboardAvoidingView>
 
       {/* ── Menu button — physical top-left corner ── */}
@@ -2010,27 +2074,32 @@ export default function App() {
                   <Text style={S.subHeadTitle}>{tr('newScenario')}</Text>
                 </View>
 
-                <Text style={S.fieldLbl}>{tr('nameLabel')}</Text>
-                <TextInput
-                  style={S.fieldInput}
-                  value={createName}
-                  onChangeText={setCreateName}
-                  placeholder={tr('namePlaceholder')}
-                  placeholderTextColor={c.fieldPh}
-                />
+                {/* Scrollable so a long prompt (up to 4000 chars) can't push the
+                    Отмена/Создать buttons below the sheet's 82%-max-height and
+                    out of reach — see the bug this fixed. */}
+                <ScrollView style={[S.formScroll, { maxHeight: formScrollMaxHeight }]} keyboardShouldPersistTaps="handled">
+                  <Text style={S.fieldLbl}>{tr('nameLabel')}</Text>
+                  <TextInput
+                    style={S.fieldInput}
+                    value={createName}
+                    onChangeText={setCreateName}
+                    placeholder={tr('namePlaceholder')}
+                    placeholderTextColor={c.fieldPh}
+                  />
 
-                <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
-                <TextInput
-                  style={S.fieldTextarea}
-                  value={createPrompt}
-                  onChangeText={setCreatePrompt}
-                  placeholder={tr('promptPlaceholder')}
-                  placeholderTextColor={c.fieldPh}
-                  multiline
-                  textAlignVertical="top"
-                />
+                  <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
+                  <TextInput
+                    style={S.fieldTextarea}
+                    value={createPrompt}
+                    onChangeText={setCreatePrompt}
+                    placeholder={tr('promptPlaceholder')}
+                    placeholderTextColor={c.fieldPh}
+                    multiline
+                    textAlignVertical="top"
+                  />
 
-                {!!createError && <Text style={S.fieldError}>{createError}</Text>}
+                  {!!createError && <Text style={S.fieldError}>{createError}</Text>}
+                </ScrollView>
 
                 <View style={S.formActions}>
                   <TouchableOpacity style={S.btnNeutral} onPress={() => setSheetView('list')} disabled={createSaving}>
@@ -2054,21 +2123,23 @@ export default function App() {
                   <Text style={S.subHeadTitle} numberOfLines={1}>{scenarioName(interfaceLang, editingScenario)}</Text>
                 </View>
 
-                <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
-                {editLoading ? (
-                  <ActivityIndicator color={c.testChecking} style={{ marginVertical: 20 }} />
-                ) : (
-                  <TextInput
-                    style={[S.fieldTextarea, { minHeight: 180 }]}
-                    value={editPrompt}
-                    onChangeText={setEditPrompt}
-                    multiline
-                    textAlignVertical="top"
-                    placeholderTextColor={c.fieldPh}
-                  />
-                )}
+                <ScrollView style={[S.formScroll, { maxHeight: formScrollMaxHeight }]} keyboardShouldPersistTaps="handled">
+                  <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
+                  {editLoading ? (
+                    <ActivityIndicator color={c.testChecking} style={{ marginVertical: 20 }} />
+                  ) : (
+                    <TextInput
+                      style={[S.fieldTextarea, { minHeight: 180 }]}
+                      value={editPrompt}
+                      onChangeText={setEditPrompt}
+                      multiline
+                      textAlignVertical="top"
+                      placeholderTextColor={c.fieldPh}
+                    />
+                  )}
 
-                {!!editError && <Text style={S.fieldError}>{editError}</Text>}
+                  {!!editError && <Text style={S.fieldError}>{editError}</Text>}
+                </ScrollView>
 
                 <View style={S.formActions}>
                   <TouchableOpacity style={S.btnNeutral} onPress={() => setSheetView('list')} disabled={editSaving}>
@@ -2116,6 +2187,11 @@ function makeStyles(c, theme) {
   return StyleSheet.create({
   root: { flex: 1, backgroundColor: c.bg },
   kav:  { flex: 1, paddingTop: 48, paddingBottom: 12 },
+  // With the KO mic row + bubble hidden (typing into the RU bubble), the
+  // gutter (scenario selector) becomes the KAV's first child and lands
+  // directly under the floating menu button (absolute, top:58, height:36,
+  // so it occupies y 58–94) — this pushes it down clear of that overlap.
+  kavTypingRu: { paddingTop: 100 },
 
   // Menu button + drawer
   menuBtn: {
@@ -2365,6 +2441,15 @@ function makeStyles(c, theme) {
     paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: c.subHeadBorder, marginBottom: 12,
   },
   subHeadTitle: { color: c.subHeadTitle, fontSize: 15, fontWeight: '700', flex: 1 },
+  // Lets the name/prompt fields scroll independently of subHead/formActions.
+  // `maxHeight` (a numeric px cap passed at the call site, see
+  // formScrollMaxHeight) — NOT flex:1 — is what makes this actually work:
+  // `sheet` only has its own maxHeight (hugs content, no fixed/flex height),
+  // so a flex:1 child has no determinate space to fill and collapses to
+  // zero. A concrete cap sidesteps that — short content still hugs (sizes
+  // to content up to the cap), long content scrolls internally instead of
+  // pushing Отмена/Создать off-screen.
+  formScroll: {},
   fieldLbl: {
     fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8,
     color: c.fieldLbl, marginBottom: 6, marginTop: 4,
