@@ -13,8 +13,8 @@
 ```mermaid
 graph TB
   subgraph people["Пользователи"]
-    RU["👤 Русскоговорящий\nГоворит / печатает по-русски"]
-    KO["👤 Кореец\nГоворит / печатает по-корейски"]
+    RU["👤 Говорящий на исходном языке\nRU/EN/JA/ZH/UZ/KK/KY/MN — выбирается в приложении"]
+    KO["👤 Кореец\nВторая сторона диалога — всегда корейский"]
     DEV["👨‍💻 Разработчик\nkotspilgrim"]
   end
 
@@ -24,22 +24,23 @@ graph TB
 
   subgraph external["Внешние системы"]
     OPENAI["☁️ OpenAI API\nGPT-4o — переводит текст\napi.openai.com"]
-    SUPABASE["☁️ Supabase\nPostgreSQL — auth, история, сценарии\nhnoubdyasgxdpplahpxu.supabase.co"]
+    SUPABASE["☁️ Supabase\nPostgreSQL — auth, сценарии, история\nhnoubdyasgxdpplahpxu.supabase.co"]
     RESEND["✉️ Resend\nОтправка кода подтверждения email\nresend.com"]
     RAILWAY["☁️ Railway\nХостинг бэкенда (публично, HTTPS)\ntranslator-production-6a87.up.railway.app"]
-    GITHUB["🐙 GitHub\nХранение исходного кода + автодеплой на Railway\ngithub.com/kotspilgrim/translator"]
+    GITHUB["🐙 GitHub\nИсходный код + автодеплой на Railway +\nавтоприменение миграций в Supabase\ngithub.com/kotspilgrim/translator"]
     TAILSCALE["🔒 Tailscale VPN\nТолько для локальной разработки\n100.68.162.96"]
   end
 
   RU -->|"Голос / текст"| APP
   KO -->|"Голос / текст"| APP
   DEV -->|"Разрабатывает и деплоит"| APP
-  APP -->|"POST /translate\nHTTPS, публично"| RAILWAY
+  APP -->|"POST /translate, /scenarios, /auth/*\nHTTPS, публично"| RAILWAY
   RAILWAY -->|"POST /chat/completions\nHTTPS"| OPENAI
-  RAILWAY -->|"auth, история, сценарии\nHTTPS"| SUPABASE
+  RAILWAY -->|"auth, сценарии, история\nHTTPS"| SUPABASE
   RAILWAY -->|"код подтверждения\nHTTPS"| RESEND
   DEV -->|"git push"| GITHUB
-  GITHUB -->|"автодеплой на push в main"| RAILWAY
+  GITHUB -->|"автодеплой backend/ на push в main"| RAILWAY
+  GITHUB -->|"автоприменение supabase/migrations/\n(Supabase GitHub integration)"| SUPABASE
   APP -.->|"локальная разработка через"| TAILSCALE
 ```
 
@@ -51,14 +52,12 @@ graph TB
 
 ```mermaid
 graph TB
-  subgraph phone["📱 Samsung Galaxy S24 — Android 14"]
-    ANDROID["Android App\n─────────────────\nReact Native 0.76 / Expo SDK 52\nHermes JS Engine\n\n• UI для двух пользователей\n• Распознавание речи на устройстве\n  expo-speech-recognition\n• TTS — expo-speech\n• История — AsyncStorage"]
+  subgraph phone["📱 Android — телефон"]
+    ANDROID["Android App\n─────────────────\nReact Native 0.76 / Expo SDK 52\nHermes JS Engine\n\n• Двусторонний UI (источник ⇄ корейский)\n• Распознавание речи на устройстве —\n  expo-speech-recognition\n• TTS — expo-speech\n• Офлайн-перевод — ML Kit (свой native-модуль)\n• История — AsyncStorage (24 ч)\n• Интерфейс на 9 языках — frontend/i18n.js"]
   end
 
   subgraph railway["☁️ Railway — производственный хостинг"]
-    BACKEND["Backend API\n─────────────────\nNode.js / Express 4\nПорт: process.env.PORT (динамический)\n\n• POST /translate, /scenarios, /health\n• /auth/* — signup/login/verify/me\n• Валидация входных данных\n• Системные промпты по сценариям\n• Rate limit: 30 req/мин (/translate), 10 req/мин (/auth)"]
-
-    PROMPTS["Файлы промптов\n─────────────────\nbackend/prompts/*.txt\n\n8 встроенных сценариев\n(stranger-on-street, v-magazine, v-restorane,\nv-banke, v-bolnitse, v-otele, v-transporte,\nv-vetklinike) + пользовательские"]
+    BACKEND["Backend API — backend/server.js\n─────────────────\nNode.js / Express 4\nПорт: process.env.PORT (динамический)\n\n• POST /translate — вызывает GPT-4o\n• /auth/* — signup/login/verify/me\n• /scenarios/* — делегируется scenarios.js\n• Rate limit: 30 req/мин (/translate),\n  10 req/мин (/auth)"]
   end
 
   subgraph pc["💻 Windows 11 PC — только для разработки"]
@@ -67,18 +66,18 @@ graph TB
 
   subgraph cloud["☁️ Облако"]
     OPENAI["OpenAI GPT-4o\napi.openai.com:443"]
-    SUPABASE["Supabase PostgreSQL\nusers, scenarios, translations"]
+    SUPABASE["Supabase PostgreSQL\nusers, scenarios, translations\n+ supabase/migrations/ (авто-применение)"]
     RESEND["Resend\nemail-коды подтверждения"]
     GITHUB["GitHub\ngithub.com/kotspilgrim/translator"]
   end
 
-  ANDROID -->|"POST /translate и др.\nHTTPS, публично\ntranslator-production-6a87.up.railway.app"| BACKEND
-  BACKEND -->|"readFileSync()"| PROMPTS
+  ANDROID -->|"HTTPS, публично\ntranslator-production-6a87.up.railway.app"| BACKEND
   BACKEND -->|"chat.completions.create()\nHTTPS"| OPENAI
-  BACKEND -->|"supabase.from().insert/select()\nHTTPS"| SUPABASE
+  BACKEND -->|"auth.js, scenarios.js:\nselect/insert/update/delete\nHTTPS"| SUPABASE
   BACKEND -->|"resend.emails.send()\nHTTPS"| RESEND
   pc -.->|"git push"| GITHUB
   GITHUB -->|"автодеплой (Root Directory: backend)"| railway
+  GITHUB -->|"автоприменение миграций"| SUPABASE
   DEVBACKEND -.->|"Tailscale, только для разработки"| ANDROID
 ```
 
@@ -86,84 +85,129 @@ graph TB
 
 ## Уровень 3А — Компоненты Android App
 
-> ⚠️ **Диаграмма ниже устарела** и описывает раннюю версию `App.js`. С тех пор добавлены: экраны авторизации (SignIn/SignUp/VerifyCode) и гостевой режим, полноценный CRUD сценариев (создание/редактирование/удаление/закрепление через backend `/scenarios`), выбор исходного языка перевода (8 языков вместо фиксированного русского), локализация интерфейса на 9 языков (`frontend/i18n.js`), офлайн-перевод через `frontend/modules/mlkit-translate/` с экраном управления языковыми пакетами, тёмная/светлая тема, themed-уведомления вместо `Alert.alert`. Актуальное описание каждой из этих частей — в `CLAUDE.md` (там оно поддерживается по ходу разработки); полная переотрисовка диаграммы ниже — отдельная задача, не сделанная в рамках этого обновления.
-
-Что происходит внутри `frontend/App.js` (снимок на момент первой версии).
+Что происходит внутри `frontend/App.js` (плюс `frontend/i18n.js` и `frontend/modules/mlkit-translate/`).
 
 ```mermaid
 graph TB
-  subgraph app["Android App — frontend/App.js"]
+  subgraph app["Android App"]
     direction TB
 
-    SCR["Screen Manager\nuseState main|history\nПереключает экраны"]
+    SCR["Screen Manager\nscreen: boot|signin|signup|verify|main|history|packs\nboot: читает JWT из AsyncStorage,\nпроверяет GET /auth/me (таймаут 8с)"]
 
-    subgraph main["Главный экран"]
-      KO_PANEL["Korean Panel\n─────────\nВерхняя панель повёрнута 180°\nkoRotated state\nКнопка поворота screen-rotation"]
-      RU_PANEL["Russian Panel\n─────────\nНижняя панель\nInline TextInput редактирование"]
-      SCENARIO["Scenario Picker\n─────────\nModal + ScrollView\n7 встроенных + свои сценарии\nСохраняет в AsyncStorage"]
-      GUTTER["Gutter\n─────────\nСтрока между пузырями:\nсценарий + кнопка истории"]
+    subgraph auth_ui["Авторизация"]
+      SIGNIN["SignInScreen\nemail/password"]
+      SIGNUP["SignUpScreen\ncheckPasswordRules() — 4 правила,\nиндикатор надёжности"]
+      VERIFY["VerifyCodeScreen\n6-значный код, автосабмит\nчерез скрытый TextInput"]
+      GUEST["Гостевой режим\nisGuest — без сценариев,\ncontext: null всегда"]
     end
 
-    subgraph logic["Логика"]
-      MIC["Mic Handler\n─────────\nexpo-speech-recognition\nhandleMic(ru|ko)\ndirRef — без closure-staleness"]
-      TRANSLATE["Translate Function\n─────────\ndoTranslate()\nfetch() → POST /translate\nАвтоматически меняет направление"]
-      TTS["TTS\n─────────\nexpo-speech\nhandleSpeak(text, lang)\nru-RU / ko-KR"]
-      HISTORY["History Manager\n─────────\nAsyncStorage\nОчищает записи старше 24 ч\nhistRef зеркалит state"]
+    subgraph main_ui["Главный экран"]
+      KO_BUBBLE["Korean Bubble\nповорот 180° (koRotated),\nflip-анимация rotateX + rotateY"]
+      SRC_BUBBLE["Source Bubble\nsourceLang — 8 языков,\nlangBtn-чип внутри бабла"]
+      GUTTER["Gutter\nScenario Picker + кнопка истории"]
+      MENU["Menu Drawer\nСценарии · История · Тест связи ·\nЯзыковые пакеты · Язык интерфейса · Тема · Выйти"]
+      NOTICE["Scenario Notice\nthemed-карточка вместо Alert.alert —\nгость/офлайн блокируют пикер"]
     end
 
-    subgraph ui_utils["UI"]
-      ICONS["MI Icon Component\n─────────\nexpo-font + String.fromCodePoint\nПрямой рендер глифов Material Icons\nMinуя @expo/vector-icons рендерер"]
-      HIST_SCR["History Screen\n─────────\nFlatList пузырей\nRU — фиолетовые справа\nKO — серые слева"]
+    subgraph i18n_logic["Локализация — frontend/i18n.js"]
+      TR["tr(key) / t(interfaceLang, key)\n9 языков интерфейса (chrome only)"]
+      LANGSHEET["LanguageSheet\nобщий модал: язык интерфейса\nи исходный язык перевода"]
+      SCNAME["scenarioName()\nscenario.slug || scenario.id →\nпереведённое название"]
     end
+
+    subgraph translate_logic["Перевод"]
+      MIC["Mic Handler\nexpo-speech-recognition\nhandleMic(ru|ko), LANG_LOCALE"]
+      DOTR["doTranslate()\nPOST /translate {text, fromLang,\ntoLang, context}"]
+      OFFLINE["offlineTranslate()\nML Kit — mlkit-translate,\nбез сценария, без интернета"]
+      TTS["TTS — expo-speech\nhandleSpeak(text, LANG_LOCALE)"]
+      NETINFO["isOnline — NetInfo\nбыстрый переход на офлайн\nбез ожидания таймаута"]
+    end
+
+    subgraph scenario_logic["Сценарии (backend/scenarios.js)"]
+      FETCHSC["fetchScenarios()\nGET /scenarios + JWT (если есть)"]
+      CRUDSC["create/edit/delete\nPOST/PUT/DELETE + JWT"]
+      PIN["Закреплённые\nAsyncStorage, до 3 шт."]
+    end
+
+    HIST_SCR["History Screen\nFlatList, фильтр по scenarioId,\nRU/источник справа, KO слева"]
+    PACKS_SCR["Language Packs Screen\nML Kit — download/delete модели\n(источник + корейский)"]
   end
 
-  SCR --> main
+  SCR --> auth_ui
+  SCR --> main_ui
   SCR --> HIST_SCR
-  KO_PANEL -->|"onPress mic"| MIC
-  RU_PANEL -->|"onPress mic"| MIC
-  MIC -->|"onResult transcript"| TRANSLATE
-  TRANSLATE -->|"сохраняет"| HISTORY
-  KO_PANEL -->|"onPress speaker"| TTS
-  RU_PANEL -->|"onPress speaker"| TTS
-  HIST_SCR -->|"читает"| HISTORY
-  main --> ICONS
-  GUTTER --> SCENARIO
+  SCR --> PACKS_SCR
+  GUEST --> NOTICE
+
+  KO_BUBBLE --> MIC
+  SRC_BUBBLE --> MIC
+  MIC -->|"onResult transcript"| DOTR
+  NETINFO -->|"офлайн → сразу"| OFFLINE
+  DOTR -->|"ошибка сети / таймаут"| OFFLINE
+  KO_BUBBLE --> TTS
+  SRC_BUBBLE --> TTS
+
+  GUTTER --> FETCHSC
+  GUTTER --> NOTICE
+  GUTTER --> SCNAME
+  FETCHSC --> PIN
+  MENU --> CRUDSC
+  MENU --> LANGSHEET
+  MENU --> TR
+
+  HIST_SCR --> SCNAME
+  PACKS_SCR --> OFFLINE
 ```
 
 ---
 
 ## Уровень 3Б — Компоненты Backend
 
-Что происходит внутри `backend/server.js`.
+Что происходит внутри `backend/server.js`, `backend/auth.js` и `backend/scenarios.js`.
 
 ```mermaid
 graph LR
-  REQ["HTTP Request\nPOST /translate | /auth/*"]
+  REQ["HTTP Request"]
 
-  subgraph backend["Backend — backend/server.js + auth.js + email.js"]
+  subgraph backend["backend/server.js"]
     direction TB
-    MW["Middleware\n─────────\nhelmet — security headers\ncors origin=false\nexpress.json limit=32kb"]
-    RL["Rate Limiters\n─────────\n/translate, /scenarios, /health: 30/мин\n/auth/*: 10/мин (authLimiter)"]
-    ROUTE["POST /translate\n─────────\nВалидация:\n• text обязателен\n• fromLang/toLang: 9 языков\n  (ALLOWED_LANGS)\n• max 1000 символов"]
-    PL["Prompt Loader\n─────────\ngetSystemPrompt()\nЧитает prompts/сценарий.txt\nПодставляет fromLang, toLang"]
-    OAI["OpenAI Client\n─────────\ngpt-4o\ntemperature=0.3\nsystem+user message"]
-    SB["Supabase Logger\n─────────\nfire-and-forget INSERT\noriginal_text, translated_text\nfrom_lang, to_lang, scenario"]
-    AUTH["Auth Router — auth.js\n─────────\nsignup / verify-email / resend-code\nlogin / me (JWT, requireAuth)\nbcrypt hash, 6-значный код, 10 мин TTL"]
-    EMAIL["Email Sender — email.js\n─────────\nsendVerificationCode()\nconsole.log всегда + Resend,\nесли задан RESEND_API_KEY"]
+    MW["Middleware\nhelmet, cors origin=false,\nexpress.json limit=32kb"]
+    RL["Rate Limiters\n/translate,/scenarios,/health: 30/мин\n/auth/*: 10/мин"]
+    ROUTE["POST /translate\nВалидация: 9 языков (ALLOWED_LANGS),\nmax 1000 символов"]
+    OAI["OpenAI Client\ngpt-4o, temperature=0.3"]
+    SB["Supabase Logger\nfire-and-forget INSERT\nв translations"]
   end
 
-  RESP["HTTP Response\n{translation} | {token, user}"]
+  subgraph auth_router["backend/auth.js — /auth"]
+    direction TB
+    AUTH["signup / verify-email / resend-code\nlogin / me\nJWT, requireAuth (экспортируется)"]
+    EMAIL["Email Sender — email.js\nconsole.log всегда + Resend,\nесли задан RESEND_API_KEY"]
+  end
+
+  subgraph scenarios_router["backend/scenarios.js — /scenarios"]
+    direction TB
+    SGET["GET / , GET /:id\noptionalAuth — гостям: built_in,\nвошедшим: + свои (owner_id)"]
+    SMUT["POST / PUT / DELETE\nrequireAuth + проверка owner_id"]
+    GSP["getSystemPrompt()\nasync — читает scenario_prompt\nиз Supabase по id"]
+  end
+
+  SUPA[("Supabase\nusers · scenarios · translations")]
+
+  RESP["HTTP Response"]
 
   REQ --> MW --> RL
   RL --> ROUTE
   RL --> AUTH
-  ROUTE --> PL
-  PL --> OAI
-  OAI --> RESP
-  ROUTE --> SB
+  RL --> SGET
+  RL --> SMUT
+
+  ROUTE --> GSP --> OAI --> RESP
+  ROUTE --> SB --> SUPA
+
   AUTH --> EMAIL
-  AUTH --> SB
-  AUTH --> RESP
+  AUTH --> SUPA --> RESP
+  SGET --> SUPA --> RESP
+  SMUT --> SUPA --> RESP
 ```
 
 ---
@@ -174,7 +218,7 @@ graph LR
 graph TB
   subgraph phone["📱 Телефон"]
     DEVAPK["Dev-client APK (debug)\ncom.translator.app\nТребует Metro,\nдля повседневной разработки"]
-    RELAPK["Release APK (standalone)\ncom.translator.app\nJS зашит в бандл,\nне требует Metro\narm64-v8a-only ≈42MB\n(полный universal ≈121MB)"]
+    RELAPK["Release APK (standalone)\ncom.translator.app\nJS зашит в бандл, не требует Metro\narm64-v8a-only ≈42MB\n(полный universal ≈121MB)"]
     STT["On-device STT\nAndroid SpeechRecognizer"]
     JS["Hermes JS Engine"]
     DEVAPK --> JS
@@ -184,7 +228,7 @@ graph TB
 
   subgraph network["Сеть — только для локальной разработки"]
     TS["🔒 Tailscale VPN\nPC: 100.68.162.96\n\nЛокальный бэкенд для итерации"]
-    USB["🔌 USB — ADB Reverse\nadb reverse tcp:8090 tcp:8090\nadb reverse tcp:3000 tcp:3000"]
+    USB["🔌 USB / Wi-Fi — ADB\nadb reverse tcp:8090 tcp:8090\nadb reverse tcp:3000 tcp:3000"]
   end
 
   subgraph pc["💻 Windows 11 PC — только разработка"]
@@ -201,7 +245,7 @@ graph TB
 
   subgraph cloud["☁️ Облако"]
     OPENAI_C["OpenAI\napi.openai.com:443"]
-    SUPABASE_C["Supabase\n*.supabase.co"]
+    SUPABASE_C["Supabase\n*.supabase.co\nМиграции — авто из supabase/migrations/"]
     RESEND_C["Resend\nresend.com"]
     GITHUB_C["GitHub\ngithub.com/kotspilgrim/translator"]
   end
@@ -209,15 +253,17 @@ graph TB
   phone -->|"Продакшн: BACKEND_URL = Railway\nHTTPS, публично, из любой сети"| RWBE
   phone -.->|"Разработка: через Tailscale"| TS
   TS -.-> pc
-  phone -.->|"Разработка: через USB"| USB
+  phone -.->|"Разработка: через USB/Wi-Fi"| USB
   USB -.-> METRO
   USB -.-> BE
   RWBE -->|"HTTPS"| OPENAI_C
   RWBE -->|"HTTPS"| SUPABASE_C
   RWBE -->|"HTTPS"| RESEND_C
   pc -.->|"HTTPS (dev copy)"| OPENAI_C
+  pc -.->|"HTTPS (dev copy)"| SUPABASE_C
   pc -->|"git push"| GITHUB_C
   GITHUB_C -->|"автодеплой"| RWBE
+  GITHUB_C -->|"автоприменение миграций"| SUPABASE_C
   GITL --- pc
 ```
 
@@ -234,8 +280,9 @@ sequenceDiagram
   participant Phone as 📱 Телефон
   participant BE as Backend (dev copy) :3000
   participant GPT as OpenAI GPT-4o
+  participant Supa as Supabase
 
-  Note over Dev,GPT: ── Первичная сборка (при изменении нативного кода) ──
+  Note over Dev,Supa: ── Первичная сборка (при изменении нативного кода) ──
 
   Dev->>Dev: expo prebuild --platform android
   Note right of Dev: Генерирует android/ из app.json
@@ -244,27 +291,28 @@ sequenceDiagram
   Dev->>ADB: adb reverse tcp:8090 tcp:8090
   Phone->>Metro: Загружает JS bundle
 
-  Note over Dev,GPT: ── Цикл JS-разработки (без пересборки) ──
+  Note over Dev,Supa: ── Цикл JS-разработки (без пересборки) ──
 
   Dev->>Dev: Редактирует App.js
   Metro-->>Phone: Fast Refresh автоматически
   Note right of Phone: Изменения видны мгновенно
 
-  Note over Dev,GPT: ── Runtime: перевод речи ──
+  Note over Dev,Supa: ── Runtime: перевод речи ──
 
   Phone->>Phone: Пользователь нажимает 🎤
   Phone->>Phone: STT → текст (on-device)
   Phone->>BE: POST /translate\n{text, fromLang, toLang, context}
-  BE->>BE: Читает prompts/сценарий.txt
+  BE->>Supa: getSystemPrompt() — select scenario_prompt
   BE->>GPT: chat.completions.create()
   GPT-->>BE: {choices[0].message.content}
   BE-->>Phone: {translation}
   Phone->>Phone: Показывает текст + TTS озвучка
 
-  Note over Dev,GPT: ── Публикация бэкенда ──
+  Note over Dev,Supa: ── Публикация бэкенда и схемы БД ──
 
   Dev->>Git: git add / git commit / git push (main)
-  Git->>Git: Railway подхватывает push,\nпересобирает и передеплоивает backend/ автоматически
+  Git->>Git: Railway пересобирает и передеплоивает backend/
+  Git->>Supa: Supabase применяет новые файлы\nsupabase/migrations/ (если есть)
 ```
 
 ---
@@ -285,6 +333,8 @@ sequenceDiagram
 | Android versionCode | `frontend/app.json` | `1` |
 | Expo SDK | `frontend/package.json` | `52` |
 | Railway: Root Directory | Railway Dashboard → Settings | `backend` |
+| Supabase project ref | `supabase/config.toml` / CLI | `hnoubdyasgxdpplahpxu` |
+| Supabase GitHub integration | Supabase Dashboard → Integrations | Working directory: `.` (корень репозитория) |
 | OpenAI ключ | `backend/.env` + Railway Variables | `OPENAI_API_KEY=sk-proj-...` |
 | Supabase URL | `backend/.env` + Railway Variables | `SUPABASE_URL=https://hnoubdyasgxdpplahpxu.supabase.co` |
 | Resend API-ключ | `backend/.env` + Railway Variables | `RESEND_API_KEY=re_...` (опционально — без него код падает только в консоль) |
@@ -297,16 +347,15 @@ sequenceDiagram
 ```
 translator/
 ├── backend/
-│   ├── server.js               ← Express: /translate, /scenarios, /health
+│   ├── server.js               ← Express: /translate, /health, монтирует auth.js и scenarios.js
 │   ├── auth.js                 ← /auth/*: signup, verify-email, resend-code, login, me
+│   ├── scenarios.js             ← /scenarios/*: CRUD поверх Supabase, экспортирует getSystemPrompt()
 │   ├── email.js                ← sendVerificationCode() — console.log + Resend
-│   ├── supabaseClient.js        ← общий Supabase-клиент (server.js и auth.js)
-│   ├── scenarios.json           ← реестр сценариев {id, name, file, builtIn}
-│   ├── migrations/              ← SQL-миграции, выполняются вручную в Supabase
+│   ├── supabaseClient.js        ← общий Supabase-клиент (server.js, auth.js, scenarios.js)
 │   ├── .env                    ← секреты (не коммитить)
 │   ├── .env.example             ← шаблон без значений
 │   ├── package.json
-│   └── prompts/                 ← 8 встроенных сценариев + пользовательские
+│   └── prompts/                 ← справочный текст промптов, БОЛЬШЕ НЕ читается кодом в рантайме
 │       ├── stranger-on-street.txt
 │       ├── v-magazine.txt
 │       ├── v-restorane.txt
@@ -316,8 +365,15 @@ translator/
 │       ├── v-transporte.txt
 │       └── v-vetklinike.txt
 │
+├── supabase/
+│   ├── config.toml               ← конфиг Supabase CLI (project_id: translator)
+│   └── migrations/                ← SQL-миграции, авто-применяются на push в main
+│       ├── 20260101000001_users_scenarios_auth.sql
+│       ├── 20260101000002_email_verification_stub.sql
+│       └── 20260101000003_scenarios_db_storage.sql
+│
 ├── frontend/
-│   ├── App.js                  ← весь UI и логика (SignIn/SignUp/History/…)
+│   ├── App.js                  ← весь UI и логика (SignIn/SignUp/History/Packs/…)
 │   ├── i18n.js                  ← переводы интерфейса (9 языков) + имена сценариев
 │   ├── app.json                 ← конфиг Expo: иконки, плагины, права, versionCode
 │   ├── eas.json                 ← профиль production (app-bundle, autoIncrement)
