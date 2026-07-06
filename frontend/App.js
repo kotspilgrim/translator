@@ -34,7 +34,7 @@ import MlkitTranslate from './modules/mlkit-translate/src/MlkitTranslateModule';
 import { t, INTERFACE_LANGUAGES, SOURCE_LANGUAGES, LANG_LOCALE, LANG_RU_NAME, scenarioName } from './i18n';
 
 // ── Config ───────────────────────────────────────────────────────────────────
-const BACKEND_URL   = 'http://100.68.162.96:3000';
+const BACKEND_URL   = 'https://translator-production-6a87.up.railway.app';
 const HISTORY_KEY   = 'translation_history';
 const PINNED_KEY    = 'translator_pinned_scenarios';
 const THEME_KEY     = 'translator_theme';

@@ -24,18 +24,23 @@ graph TB
 
   subgraph external["Внешние системы"]
     OPENAI["☁️ OpenAI API\nGPT-4o — переводит текст\napi.openai.com"]
-    SUPABASE["☁️ Supabase\nPostgreSQL — хранит историю переводов\nhnoubdyasgxdpplahpxu.supabase.co"]
-    GITHUB["🐙 GitHub\nХранение исходного кода\ngithub.com/kotspilgrim/translator"]
-    TAILSCALE["🔒 Tailscale VPN\nЗащищённая сеть телефон↔ПК\n100.68.162.96"]
+    SUPABASE["☁️ Supabase\nPostgreSQL — auth, история, сценарии\nhnoubdyasgxdpplahpxu.supabase.co"]
+    RESEND["✉️ Resend\nОтправка кода подтверждения email\nresend.com"]
+    RAILWAY["☁️ Railway\nХостинг бэкенда (публично, HTTPS)\ntranslator-production-6a87.up.railway.app"]
+    GITHUB["🐙 GitHub\nХранение исходного кода + автодеплой на Railway\ngithub.com/kotspilgrim/translator"]
+    TAILSCALE["🔒 Tailscale VPN\nТолько для локальной разработки\n100.68.162.96"]
   end
 
   RU -->|"Голос / текст"| APP
   KO -->|"Голос / текст"| APP
   DEV -->|"Разрабатывает и деплоит"| APP
-  APP -->|"POST /chat/completions\nHTTPS"| OPENAI
-  APP -->|"INSERT translations\nHTTPS"| SUPABASE
-  DEV -->|"git push / git pull"| GITHUB
-  APP -->|"Трафик идёт через"| TAILSCALE
+  APP -->|"POST /translate\nHTTPS, публично"| RAILWAY
+  RAILWAY -->|"POST /chat/completions\nHTTPS"| OPENAI
+  RAILWAY -->|"auth, история, сценарии\nHTTPS"| SUPABASE
+  RAILWAY -->|"код подтверждения\nHTTPS"| RESEND
+  DEV -->|"git push"| GITHUB
+  GITHUB -->|"автодеплой на push в main"| RAILWAY
+  APP -.->|"локальная разработка через"| TAILSCALE
 ```
 
 ---
@@ -50,30 +55,40 @@ graph TB
     ANDROID["Android App\n─────────────────\nReact Native 0.76 / Expo SDK 52\nHermes JS Engine\n\n• UI для двух пользователей\n• Распознавание речи на устройстве\n  expo-speech-recognition\n• TTS — expo-speech\n• История — AsyncStorage"]
   end
 
-  subgraph pc["💻 Windows 11 PC — 192.168.35.219 / 100.68.162.96"]
-    BACKEND["Backend API\n─────────────────\nNode.js 24 / Express 4\nПорт: 3000\n\n• POST /translate\n• Валидация входных данных\n• Системные промпты по сценариям\n• Rate limit: 30 req/мин"]
+  subgraph railway["☁️ Railway — производственный хостинг"]
+    BACKEND["Backend API\n─────────────────\nNode.js / Express 4\nПорт: process.env.PORT (динамический)\n\n• POST /translate, /scenarios, /health\n• /auth/* — signup/login/verify/me\n• Валидация входных данных\n• Системные промпты по сценариям\n• Rate limit: 30 req/мин (/translate), 10 req/мин (/auth)"]
 
-    PROMPTS["Файлы промптов\n─────────────────\nbackend/prompts/*.txt\n\nstranger-on-street.txt\nv-magazine.txt\nv-restorane.txt\n..."]
+    PROMPTS["Файлы промптов\n─────────────────\nbackend/prompts/*.txt\n\n8 встроенных сценариев\n(stranger-on-street, v-magazine, v-restorane,\nv-banke, v-bolnitse, v-otele, v-transporte,\nv-vetklinike) + пользовательские"]
+  end
+
+  subgraph pc["💻 Windows 11 PC — только для разработки"]
+    DEVBACKEND["Backend (dev copy)\n192.168.35.219 / 100.68.162.96:3000\nтот же код, для локальной итерации"]
   end
 
   subgraph cloud["☁️ Облако"]
     OPENAI["OpenAI GPT-4o\napi.openai.com:443"]
-    SUPABASE["Supabase PostgreSQL\ntable: translations"]
+    SUPABASE["Supabase PostgreSQL\nusers, scenarios, translations"]
+    RESEND["Resend\nemail-коды подтверждения"]
     GITHUB["GitHub\ngithub.com/kotspilgrim/translator"]
   end
 
-  ANDROID -->|"POST /translate\n{text, fromLang, toLang, context}\nHTTP через Tailscale\n100.68.162.96:3000"| BACKEND
+  ANDROID -->|"POST /translate и др.\nHTTPS, публично\ntranslator-production-6a87.up.railway.app"| BACKEND
   BACKEND -->|"readFileSync()"| PROMPTS
   BACKEND -->|"chat.completions.create()\nHTTPS"| OPENAI
-  BACKEND -->|"supabase.from().insert()\nHTTPS"| SUPABASE
-  pc -->|"git push"| GITHUB
+  BACKEND -->|"supabase.from().insert/select()\nHTTPS"| SUPABASE
+  BACKEND -->|"resend.emails.send()\nHTTPS"| RESEND
+  pc -.->|"git push"| GITHUB
+  GITHUB -->|"автодеплой (Root Directory: backend)"| railway
+  DEVBACKEND -.->|"Tailscale, только для разработки"| ANDROID
 ```
 
 ---
 
 ## Уровень 3А — Компоненты Android App
 
-Что происходит внутри `frontend/App.js`.
+> ⚠️ **Диаграмма ниже устарела** и описывает раннюю версию `App.js`. С тех пор добавлены: экраны авторизации (SignIn/SignUp/VerifyCode) и гостевой режим, полноценный CRUD сценариев (создание/редактирование/удаление/закрепление через backend `/scenarios`), выбор исходного языка перевода (8 языков вместо фиксированного русского), локализация интерфейса на 9 языков (`frontend/i18n.js`), офлайн-перевод через `frontend/modules/mlkit-translate/` с экраном управления языковыми пакетами, тёмная/светлая тема, themed-уведомления вместо `Alert.alert`. Актуальное описание каждой из этих частей — в `CLAUDE.md` (там оно поддерживается по ходу разработки); полная переотрисовка диаграммы ниже — отдельная задача, не сделанная в рамках этого обновления.
+
+Что происходит внутри `frontend/App.js` (снимок на момент первой версии).
 
 ```mermaid
 graph TB
@@ -123,25 +138,32 @@ graph TB
 
 ```mermaid
 graph LR
-  REQ["HTTP Request\nPOST /translate"]
+  REQ["HTTP Request\nPOST /translate | /auth/*"]
 
-  subgraph backend["Backend — backend/server.js"]
+  subgraph backend["Backend — backend/server.js + auth.js + email.js"]
     direction TB
     MW["Middleware\n─────────\nhelmet — security headers\ncors origin=false\nexpress.json limit=32kb"]
-    RL["Rate Limiter\n─────────\n30 запросов / 60 сек\nexpress-rate-limit"]
-    ROUTE["POST /translate\n─────────\nВалидация:\n• text обязателен\n• fromLang / toLang:\n  только русский|корейский\n• max 1000 символов"]
+    RL["Rate Limiters\n─────────\n/translate, /scenarios, /health: 30/мин\n/auth/*: 10/мин (authLimiter)"]
+    ROUTE["POST /translate\n─────────\nВалидация:\n• text обязателен\n• fromLang/toLang: 9 языков\n  (ALLOWED_LANGS)\n• max 1000 символов"]
     PL["Prompt Loader\n─────────\ngetSystemPrompt()\nЧитает prompts/сценарий.txt\nПодставляет fromLang, toLang"]
     OAI["OpenAI Client\n─────────\ngpt-4o\ntemperature=0.3\nsystem+user message"]
     SB["Supabase Logger\n─────────\nfire-and-forget INSERT\noriginal_text, translated_text\nfrom_lang, to_lang, scenario"]
+    AUTH["Auth Router — auth.js\n─────────\nsignup / verify-email / resend-code\nlogin / me (JWT, requireAuth)\nbcrypt hash, 6-значный код, 10 мин TTL"]
+    EMAIL["Email Sender — email.js\n─────────\nsendVerificationCode()\nconsole.log всегда + Resend,\nесли задан RESEND_API_KEY"]
   end
 
-  RESP["HTTP Response\n{translation}"]
+  RESP["HTTP Response\n{translation} | {token, user}"]
 
-  REQ --> MW --> RL --> ROUTE
+  REQ --> MW --> RL
+  RL --> ROUTE
+  RL --> AUTH
   ROUTE --> PL
   PL --> OAI
   OAI --> RESP
   ROUTE --> SB
+  AUTH --> EMAIL
+  AUTH --> SB
+  AUTH --> RESP
 ```
 
 ---
@@ -150,40 +172,52 @@ graph LR
 
 ```mermaid
 graph TB
-  subgraph phone["📱 Samsung Galaxy S24"]
-    APK["APK\ncom.translator.app\nexpo-dev-client build"]
+  subgraph phone["📱 Телефон"]
+    DEVAPK["Dev-client APK (debug)\ncom.translator.app\nТребует Metro,\nдля повседневной разработки"]
+    RELAPK["Release APK (standalone)\ncom.translator.app\nJS зашит в бандл,\nне требует Metro\narm64-v8a-only ≈42MB\n(полный universal ≈121MB)"]
     STT["On-device STT\nAndroid SpeechRecognizer"]
-    JS["Hermes JS Engine\nвыполняет App.js bundle"]
-    APK --> JS --> STT
+    JS["Hermes JS Engine"]
+    DEVAPK --> JS
+    RELAPK --> JS
+    JS --> STT
   end
 
-  subgraph network["Сеть"]
-    TS["🔒 Tailscale VPN\nPC: 100.68.162.96\nPhone: 100.x.x.x\n\nРаботает на любой Wi-Fi сети"]
-    USB["🔌 USB — ADB Reverse\nadb reverse tcp:8081 tcp:8081\nadb reverse tcp:8082 tcp:8082\nadb reverse tcp:3000 tcp:3000\n\nДля разработки без Wi-Fi"]
+  subgraph network["Сеть — только для локальной разработки"]
+    TS["🔒 Tailscale VPN\nPC: 100.68.162.96\n\nЛокальный бэкенд для итерации"]
+    USB["🔌 USB — ADB Reverse\nadb reverse tcp:8090 tcp:8090\nadb reverse tcp:3000 tcp:3000"]
   end
 
-  subgraph pc["💻 Windows 11 PC"]
-    BE["Node.js Backend\n:3000\nLAN: 192.168.35.219\nTailscale: 100.68.162.96"]
-    METRO["Metro Bundler\n:8081\nтолько в режиме разработки"]
+  subgraph pc["💻 Windows 11 PC — только разработка"]
+    BE["Node.js Backend (dev copy)\n:3000\nLAN: 192.168.35.219\nTailscale: 100.68.162.96"]
+    METRO["Metro Bundler\n:8090 (не 8081 — см. CLAUDE.md)\nтолько для dev-client"]
     GITL["Git repo\nC:\\Projects\\translator\nbranch: main"]
-    ENV[".env\nOPENAI_API_KEY\nSUPABASE_URL\nSUPABASE_SERVICE_KEY"]
+    ENV[".env\nOPENAI_API_KEY, SUPABASE_*\nJWT_SECRET, RESEND_API_KEY, EMAIL_FROM"]
     BE --- ENV
+  end
+
+  subgraph railway_deploy["☁️ Railway — продакшн"]
+    RWBE["Backend (production)\nprocess.env.PORT\ntranslator-production-6a87.up.railway.app\nRoot Directory: backend\nАвтодеплой из GitHub main"]
   end
 
   subgraph cloud["☁️ Облако"]
     OPENAI_C["OpenAI\napi.openai.com:443"]
     SUPABASE_C["Supabase\n*.supabase.co"]
+    RESEND_C["Resend\nresend.com"]
     GITHUB_C["GitHub\ngithub.com/kotspilgrim/translator"]
   end
 
-  phone <-->|"Продакшн: через Tailscale\n100.68.162.96:3000"| TS
-  TS <--> pc
-  phone <-.->|"Разработка: через USB"| USB
-  USB <-.-> METRO
-  USB <-.-> BE
-  pc -->|"HTTPS"| OPENAI_C
-  pc -->|"HTTPS"| SUPABASE_C
+  phone -->|"Продакшн: BACKEND_URL = Railway\nHTTPS, публично, из любой сети"| RWBE
+  phone -.->|"Разработка: через Tailscale"| TS
+  TS -.-> pc
+  phone -.->|"Разработка: через USB"| USB
+  USB -.-> METRO
+  USB -.-> BE
+  RWBE -->|"HTTPS"| OPENAI_C
+  RWBE -->|"HTTPS"| SUPABASE_C
+  RWBE -->|"HTTPS"| RESEND_C
+  pc -.->|"HTTPS (dev copy)"| OPENAI_C
   pc -->|"git push"| GITHUB_C
+  GITHUB_C -->|"автодеплой"| RWBE
   GITL --- pc
 ```
 
@@ -195,19 +229,19 @@ graph TB
 sequenceDiagram
   participant Dev as 👨‍💻 Разработчик
   participant Git as 🐙 GitHub
-  participant Metro as Metro :8081
-  participant ADB as ADB USB
-  participant Phone as 📱 Samsung S24
-  participant BE as Backend :3000
+  participant Metro as Metro :8090
+  participant ADB as ADB USB/Wi-Fi
+  participant Phone as 📱 Телефон
+  participant BE as Backend (dev copy) :3000
   participant GPT as OpenAI GPT-4o
 
   Note over Dev,GPT: ── Первичная сборка (при изменении нативного кода) ──
 
   Dev->>Dev: expo prebuild --platform android
   Note right of Dev: Генерирует android/ из app.json
-  Dev->>Phone: npm run android (adb install APK)
-  Phone->>ADB: Подключается по USB
-  Dev->>ADB: adb reverse tcp:8081 tcp:8081
+  Dev->>Phone: npm run android (adb install dev-client APK)
+  Phone->>ADB: Подключается по USB или Wi-Fi (wireless debugging)
+  Dev->>ADB: adb reverse tcp:8090 tcp:8090
   Phone->>Metro: Загружает JS bundle
 
   Note over Dev,GPT: ── Цикл JS-разработки (без пересборки) ──
@@ -227,9 +261,10 @@ sequenceDiagram
   BE-->>Phone: {translation}
   Phone->>Phone: Показывает текст + TTS озвучка
 
-  Note over Dev,GPT: ── Сохранение работы ──
+  Note over Dev,GPT: ── Публикация бэкенда ──
 
-  Dev->>Git: git add / git commit / git push
+  Dev->>Git: git add / git commit / git push (main)
+  Git->>Git: Railway подхватывает push,\nпересобирает и передеплоивает backend/ автоматически
 ```
 
 ---
@@ -238,16 +273,21 @@ sequenceDiagram
 
 | Параметр | Файл | Значение |
 |---|---|---|
-| Backend URL (Tailscale) | `frontend/App.js:25` | `http://100.68.162.96:3000` |
-| Backend URL (USB-dev) | `frontend/App.js:25` | `http://localhost:3000` |
+| **Backend URL (продакшн)** | `frontend/App.js:37` | `https://translator-production-6a87.up.railway.app` |
+| Backend URL (Tailscale, dev) | `frontend/App.js:37` (закомментированная альтернатива) | `http://100.68.162.96:3000` |
+| Backend URL (USB-dev) | — | `http://localhost:3000` |
 | LAN IP компьютера | `ipconfig` | `192.168.35.219` |
 | Tailscale IP компьютера | Tailscale dashboard | `100.68.162.96` |
-| Backend порт | `backend/server.js:13` | `3000` |
-| Metro порт | по умолчанию | `8081` |
+| Backend порт (Railway) | `backend/server.js` | `process.env.PORT` (динамический, Railway сам назначает) |
+| Backend порт (локально) | `backend/server.js` | `3000` (фолбэк, если `PORT` не задан) |
+| Metro порт | `frontend/package.json` scripts | `8090` (не 8081 — см. CLAUDE.md, конфликт с Docker Desktop) |
 | Android package | `frontend/app.json` | `com.translator.app` |
+| Android versionCode | `frontend/app.json` | `1` |
 | Expo SDK | `frontend/package.json` | `52` |
-| OpenAI ключ | `backend/.env` | `OPENAI_API_KEY=sk-proj-...` |
-| Supabase URL | `backend/.env` | `SUPABASE_URL=https://hnoubdyasgxdpplahpxu.supabase.co` |
+| Railway: Root Directory | Railway Dashboard → Settings | `backend` |
+| OpenAI ключ | `backend/.env` + Railway Variables | `OPENAI_API_KEY=sk-proj-...` |
+| Supabase URL | `backend/.env` + Railway Variables | `SUPABASE_URL=https://hnoubdyasgxdpplahpxu.supabase.co` |
+| Resend API-ключ | `backend/.env` + Railway Variables | `RESEND_API_KEY=re_...` (опционально — без него код падает только в консоль) |
 | Git remote | `git remote -v` | `https://github.com/kotspilgrim/translator.git` |
 
 ---
@@ -257,29 +297,39 @@ sequenceDiagram
 ```
 translator/
 ├── backend/
-│   ├── server.js              ← Express, маршрут POST /translate
-│   ├── .env                   ← секреты (не коммитить)
-│   ├── .env.example           ← шаблон без значений
+│   ├── server.js               ← Express: /translate, /scenarios, /health
+│   ├── auth.js                 ← /auth/*: signup, verify-email, resend-code, login, me
+│   ├── email.js                ← sendVerificationCode() — console.log + Resend
+│   ├── supabaseClient.js        ← общий Supabase-клиент (server.js и auth.js)
+│   ├── scenarios.json           ← реестр сценариев {id, name, file, builtIn}
+│   ├── migrations/              ← SQL-миграции, выполняются вручную в Supabase
+│   ├── .env                    ← секреты (не коммитить)
+│   ├── .env.example             ← шаблон без значений
 │   ├── package.json
-│   └── prompts/
+│   └── prompts/                 ← 8 встроенных сценариев + пользовательские
 │       ├── stranger-on-street.txt
 │       ├── v-magazine.txt
 │       ├── v-restorane.txt
 │       ├── v-banke.txt
 │       ├── v-bolnitse.txt
 │       ├── v-otele.txt
-│       └── v-transporte.txt
+│       ├── v-transporte.txt
+│       └── v-vetklinike.txt
 │
 ├── frontend/
-│   ├── App.js                 ← весь UI и логика (~600 строк)
-│   ├── app.json               ← конфиг Expo: иконки, плагины, права
+│   ├── App.js                  ← весь UI и логика (SignIn/SignUp/History/…)
+│   ├── i18n.js                  ← переводы интерфейса (9 языков) + имена сценариев
+│   ├── app.json                 ← конфиг Expo: иконки, плагины, права, versionCode
+│   ├── eas.json                 ← профиль production (app-bundle, autoIncrement)
 │   ├── package.json
+│   ├── modules/mlkit-translate/ ← локальный Expo-модуль, офлайн-перевод (Kotlin)
 │   ├── assets/
-│   │   ├── icon.png           ← иконка 1024×1024
-│   │   ├── adaptive-icon.png  ← адаптивная иконка Android
+│   │   ├── icon.png            ← иконка 1024×1024
+│   │   ├── adaptive-icon.png   ← адаптивная иконка Android
 │   │   └── splash-icon.png
-│   └── android/               ← генерируется expo prebuild (не трогать)
+│   └── android/                 ← генерируется expo prebuild, не в git
 │
-├── CLAUDE.md                  ← инструкции для Claude Code
-└── ARCHITECTURE.md            ← этот документ
+├── PRIVACY.md                   ← черновик политики конфиденциальности (для Play Console)
+├── CLAUDE.md                    ← инструкции для Claude Code
+└── ARCHITECTURE.md              ← этот документ
 ```
