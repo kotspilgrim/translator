@@ -16,7 +16,11 @@ const PORT = process.env.PORT || 3000;
 
 app.use(helmet());
 app.use(cors({ origin: false }));
-app.use(express.json({ limit: '32kb' }));
+// Raised from 32kb: a /translate body can now carry up to 8 history turns
+// (original + translated, each up to MAX_TEXT_LEN) alongside the new text —
+// worst case (multi-byte Cyrillic/Korean UTF-8) that's close to 32kb on its
+// own before the request's own text and JSON overhead.
+app.use(express.json({ limit: '64kb' }));
 
 const limiter = rateLimit({
   windowMs: 60 * 1000,
@@ -64,10 +68,31 @@ const ALLOWED_LANGS = [
   'русский', 'корейский', 'английский', 'японский', 'китайский',
   'узбекский', 'казахский', 'киргизский', 'монгольский',
 ];
-const MAX_TEXT_LEN  = 1000;
+const MAX_TEXT_LEN     = 1000;
+// Mirrors the frontend's MAX_CONTEXT_TURNS/session-gap logic (App.js) — the
+// client is trusted to pick the right turns (same-scenario, <2h idle gaps),
+// but length/shape are re-validated here since request bodies aren't trusted
+// as-is (a client bug or a hand-crafted request could send anything).
+const MAX_HISTORY_TURNS = 8;
+
+// Drops anything malformed and caps size, but does not re-derive the 2h
+// session/scenario logic — that's the frontend's job (it has the full
+// history with timestamps; the backend only ever sees whatever slice it's
+// sent for this one request).
+function sanitizeHistory(rawHistory) {
+  if (!Array.isArray(rawHistory)) return [];
+  return rawHistory
+    .filter(h => h && typeof h.original === 'string' && typeof h.translated === 'string'
+      && (h.direction === 'ru-ko' || h.direction === 'ko-ru'))
+    .slice(-MAX_HISTORY_TURNS)
+    .map(h => ({
+      original:   h.original.slice(0, MAX_TEXT_LEN),
+      translated: h.translated.slice(0, MAX_TEXT_LEN),
+    }));
+}
 
 app.post('/translate', async (req, res) => {
-  const { text, fromLang, toLang, context } = req.body;
+  const { text, fromLang, toLang, context, history } = req.body;
 
   if (!text || !fromLang || !toLang) {
     return res.status(400).json({ error: 'Отсутствуют поля: text, fromLang, toLang' });
@@ -82,15 +107,25 @@ app.post('/translate', async (req, res) => {
     return res.status(500).json({ error: 'OPENAI_API_KEY не настроен' });
   }
 
-  const systemPrompt = await scenariosRouter.getSystemPrompt(context, fromLang, toLang);
+  const systemPrompt   = await scenariosRouter.getSystemPrompt(context, fromLang, toLang);
+  const contextHistory = sanitizeHistory(history);
+
+  const messages = [{ role: 'system', content: systemPrompt }];
+  if (contextHistory.length) {
+    const transcript = contextHistory
+      .map((h, i) => `${i + 1}. ${h.original} → ${h.translated}`)
+      .join('\n');
+    messages.push({
+      role: 'system',
+      content: `Недавние реплики этого же разговора (для восстановления опущенных подлежащих/местоимений и подразумеваемых субъектов — не переводи их повторно, они только для контекста):\n${transcript}`,
+    });
+  }
+  messages.push({ role: 'user', content: text });
 
   try {
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: text },
-      ],
+      messages,
       temperature: 0.3,
     });
 

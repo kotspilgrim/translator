@@ -44,6 +44,14 @@ const SOURCE_LANG_KEY    = 'translator_source_lang';
 const HISTORY_TTL   = 24 * 60 * 60 * 1000;
 const SILENCE_MS    = 7000;
 const MAX_PINNED    = 3;
+// A conversation only counts as the SAME context while consecutive turns are
+// less than 2h apart — an idle gap of 2h+ means whatever was said before it
+// is treated as a different conversation and dropped from the model's
+// context, even though it's still well within the 24h HISTORY_TTL above.
+const CONTEXT_SESSION_GAP = 2 * 60 * 60 * 1000;
+// Caps how many recent turns get sent as context per request — bounds the
+// prompt/token cost regardless of how long the in-session streak is.
+const MAX_CONTEXT_TURNS   = 8;
 
 // Used until GET /scenarios resolves (or if the backend is unreachable)
 const FALLBACK_SCENARIOS = [
@@ -1494,6 +1502,27 @@ export default function App() {
     }
   };
 
+  // Walks histRef.current (newest-first, per saveEntry) for the given
+  // scenario and returns only the current "session" — a contiguous run of
+  // turns with no idle gap of CONTEXT_SESSION_GAP or more between them —
+  // capped to the most recent MAX_CONTEXT_TURNS and returned oldest-first
+  // for the prompt. An old conversation resumed after a long break is
+  // deliberately excluded, even if it's still inside the 24h HISTORY_TTL.
+  const getContextHistory = currentScenarioId => {
+    const inSession = [];
+    let prevTimestamp = Date.now();
+    for (const entry of histRef.current) {
+      if (entry.scenarioId !== currentScenarioId) continue;
+      if (prevTimestamp - entry.timestamp >= CONTEXT_SESSION_GAP) break;
+      inSession.push(entry);
+      prevTimestamp = entry.timestamp;
+      if (inSession.length >= MAX_CONTEXT_TURNS) break;
+    }
+    return inSession.reverse().map(e => ({
+      original: e.originalText, translated: e.translatedText, direction: e.direction,
+    }));
+  };
+
   const doTranslate = async (text, fromLang, toLang, sourceBubble) => {
     setTranslating(true);
     if (!isOnlineRef.current) {
@@ -1507,10 +1536,19 @@ export default function App() {
     const ctrl = new AbortController();
     const tid  = setTimeout(() => ctrl.abort(), 15000);
     try {
+      // Context (scenario prompt + recent-turns history) only makes sense
+      // when there's an actual scenario active — guests never have one
+      // (context is always null for them), so there's nothing to build a
+      // conversation session around either.
+      const activeScenarioId = isGuestRef.current ? null : scenarioIdRef.current;
       const resp = await fetch(`${BACKEND_URL}/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:   JSON.stringify({ text, fromLang, toLang, context: isGuestRef.current ? null : scenarioIdRef.current }),
+        body:   JSON.stringify({
+          text, fromLang, toLang,
+          context: activeScenarioId,
+          history: activeScenarioId ? getContextHistory(activeScenarioId) : [],
+        }),
         signal: ctrl.signal,
       });
       clearTimeout(tid);
