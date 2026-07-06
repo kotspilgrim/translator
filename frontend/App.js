@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, ActivityIndicator,
   ScrollView, FlatList, Modal, TextInput, Keyboard,
-  KeyboardAvoidingView, Platform, Animated, Easing, Alert,
+  KeyboardAvoidingView, Platform, Animated, Easing,
 } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -31,6 +31,7 @@ import {
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
 import MlkitTranslate from './modules/mlkit-translate/src/MlkitTranslateModule';
+import { t, INTERFACE_LANGUAGES, SOURCE_LANGUAGES, LANG_LOCALE, LANG_RU_NAME, scenarioName } from './i18n';
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const BACKEND_URL   = 'http://100.68.162.96:3000';
@@ -38,6 +39,8 @@ const HISTORY_KEY   = 'translation_history';
 const PINNED_KEY    = 'translator_pinned_scenarios';
 const THEME_KEY     = 'translator_theme';
 const AUTH_TOKEN_KEY = 'translator_auth_token';
+const INTERFACE_LANG_KEY = 'translator_interface_lang';
+const SOURCE_LANG_KEY    = 'translator_source_lang';
 const HISTORY_TTL   = 24 * 60 * 60 * 1000;
 const SILENCE_MS    = 7000;
 const MAX_PINNED    = 3;
@@ -54,11 +57,12 @@ const FALLBACK_SCENARIOS = [
   { id: 'v-vetklinike',       name: 'В ветеринарной клинике',   builtIn: true },
 ];
 
-// Placeholders — text content only, not rotation
-const PH_RU        = 'Коснитесь кнопки микрофона, чтобы перейти в голосовой режим, или текстовой области, чтобы ввести текст для перевода.';
+// Placeholders — text content only, not rotation. The Korean side is fixed
+// Korean regardless of interface language (see i18n.js); the Russian/source
+// side's placeholders (PH_RU/PH_RU_WAIT) DO follow interfaceLang — they're
+// chrome hints, not conversation content — via tr('phRu')/tr('phRuWait') below.
 const PH_KO_WAIT   = '상대방의 발화가 끝날 때까지\n기다려 주세요';
 const PH_KO_ACTIVE = '음성 통역 또는 텍스트 번역으로 대화 할 수 있습니다.\n음성으로 대화하려면 마이크 버튼을,\n텍스트로 대화하려면 텍스트 영역을 누르세요.';
-const PH_RU_WAIT   = 'Ожидайте ответ собеседника';
 
 const fmtTime = ts => {
   const d = new Date(ts);
@@ -232,14 +236,16 @@ const SHADOW_LG = { elevation: 10, shadowColor: '#000', shadowOffset: { width: 0
 const shadow = (theme, preset) => (theme === 'light' ? preset : null);
 
 // ── History screen ───────────────────────────────────────────────────────────
-function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme }) {
+function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme, lang }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+  const tr = (key, vars) => t(lang, key, vars);
 
   const [viewId,   setViewId]   = useState(initialScenarioId);
   const [showDrop, setShowDrop] = useState(false);
 
-  const viewName = scenarios.find(s => s.id === viewId)?.name || 'Сценарий';
+  const viewScenario = scenarios.find(s => s.id === viewId);
+  const viewName = viewScenario ? scenarioName(lang, viewScenario) : tr('scenarioFallback');
   const filtered = history.filter(i => i.scenarioId === viewId);
 
   return (
@@ -249,7 +255,7 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme })
         <TouchableOpacity onPress={onBack} style={S.backBtn}>
           <MI name="arrow-back" size={24} color={c.textStrong} />
         </TouchableOpacity>
-        <Text style={S.histTitle}>История</Text>
+        <Text style={S.histTitle}>{tr('historyTitle')}</Text>
       </View>
 
       <TouchableOpacity style={S.histScenChip} onPress={() => setShowDrop(v => !v)}>
@@ -268,7 +274,7 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme })
                 onPress={() => { setViewId(s.id); setShowDrop(false); }}
               >
                 <Text style={[S.histScenOptTxt, s.id === viewId && S.histScenOptTxtOn]} numberOfLines={1}>
-                  {s.name}
+                  {scenarioName(lang, s)}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -278,7 +284,7 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme })
 
       {filtered.length === 0 ? (
         <View style={S.histEmpty}>
-          <Text style={S.histEmptyTxt}>Нет переводов за последние 24 часа</Text>
+          <Text style={S.histEmptyTxt}>{tr('noHistory24h')}</Text>
         </View>
       ) : (
         <FlatList
@@ -299,7 +305,7 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme })
                   <MI name="south" size={14} color={sepColor} style={S.chatSep} />
                   <Text style={[S.chatTrans, { color: transColor }]}>{item.translatedText}</Text>
                   <Text style={[S.chatTime, { color: timeColor }]}>
-                    {item.offline ? 'офлайн · ' : ''}{fmtTime(item.timestamp)}
+                    {item.offline ? `${tr('offlineTag')} · ` : ''}{fmtTime(item.timestamp)}
                   </Text>
                 </View>
               </View>
@@ -312,17 +318,22 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme })
 }
 
 // ── Language packs (offline translation) ────────────────────────────────────
-const OFFLINE_LANGUAGES = [
-  { code: 'ru', label: 'Русский' },
-  { code: 'ko', label: '한국어' },
-];
-
-function LanguagePacksScreen({ theme, onBack }) {
+// Korean is always one side; the other is whichever source language is
+// currently selected for the source bubble (see "Source language" below) —
+// offline translation only ever runs between those two, so the pack list
+// tracks the same pair instead of a fixed ru/ko.
+function LanguagePacksScreen({ theme, onBack, lang, sourceLang }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+  const tr = (key, vars) => t(lang, key, vars);
 
-  const [status, setStatus]   = useState({}); // { ru: bool, ko: bool }
-  const [busy, setBusy]       = useState({}); // { ru: 'download'|'delete', ko: ... }
+  const OFFLINE_LANGUAGES = useMemo(() => ([
+    SOURCE_LANGUAGES.find(l => l.code === sourceLang) || SOURCE_LANGUAGES[0],
+    INTERFACE_LANGUAGES.find(l => l.code === 'ko'),
+  ]), [sourceLang]);
+
+  const [status, setStatus]   = useState({}); // { [code]: bool }
+  const [busy, setBusy]       = useState({}); // { [code]: 'download'|'delete' }
   const [wifiOnly, setWifiOnly] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
@@ -337,10 +348,10 @@ function LanguagePacksScreen({ theme, onBack }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      try { await refreshStatus(); } catch { setError('Не удалось проверить статус пакетов'); }
+      try { await refreshStatus(); } catch { setError(tr('packsStatusFailed')); }
       setLoading(false);
     })();
-  }, []);
+  }, [sourceLang]);
 
   const handleDownload = async code => {
     setError('');
@@ -349,7 +360,7 @@ function LanguagePacksScreen({ theme, onBack }) {
       await MlkitTranslate.downloadModel(code, wifiOnly);
       await refreshStatus();
     } catch {
-      setError('Не удалось скачать пакет — проверьте соединение');
+      setError(tr('packsDownloadFailed'));
     }
     setBusy(b => ({ ...b, [code]: null }));
   };
@@ -361,7 +372,7 @@ function LanguagePacksScreen({ theme, onBack }) {
       await MlkitTranslate.deleteModel(code);
       await refreshStatus();
     } catch {
-      setError('Не удалось удалить пакет');
+      setError(tr('packsDeleteFailed'));
     }
     setBusy(b => ({ ...b, [code]: null }));
   };
@@ -373,13 +384,10 @@ function LanguagePacksScreen({ theme, onBack }) {
         <TouchableOpacity onPress={onBack} style={S.backBtn}>
           <MI name="arrow-back" size={24} color={c.textStrong} />
         </TouchableOpacity>
-        <Text style={S.histTitle}>Языковые пакеты</Text>
+        <Text style={S.histTitle}>{tr('languagePacks')}</Text>
       </View>
 
-      <Text style={S.packsHint}>
-        Скачайте пакеты обоих языков, чтобы переводить без интернета и без учёта сценария —
-        приложение переключится на них автоматически, если сервер недоступен.
-      </Text>
+      <Text style={S.packsHint}>{tr('packsHint')}</Text>
 
       {loading ? (
         <ActivityIndicator color={c.linkColor} style={{ marginTop: 30 }} />
@@ -393,7 +401,7 @@ function LanguagePacksScreen({ theme, onBack }) {
                 <View style={S.packInfo}>
                   <Text style={S.packName}>{l.label}</Text>
                   <Text style={[S.packStatus, downloaded && { color: c.btnSaveText }]}>
-                    {downloaded ? 'Скачан' : 'Не скачан'}
+                    {downloaded ? tr('downloaded') : tr('notDownloaded')}
                   </Text>
                 </View>
                 {busyAction ? (
@@ -401,12 +409,12 @@ function LanguagePacksScreen({ theme, onBack }) {
                 ) : downloaded ? (
                   <TouchableOpacity style={S.packBtnDanger} onPress={() => handleDelete(l.code)}>
                     <MI name="delete-outline" size={18} color={c.btnDangerText} />
-                    <Text style={S.packBtnDangerTxt}>Удалить</Text>
+                    <Text style={S.packBtnDangerTxt}>{tr('delete')}</Text>
                   </TouchableOpacity>
                 ) : (
                   <TouchableOpacity style={S.packBtnSave} onPress={() => handleDownload(l.code)}>
                     <MI name="download" size={18} color={c.btnSaveText} />
-                    <Text style={S.packBtnSaveTxt}>Скачать</Text>
+                    <Text style={S.packBtnSaveTxt}>{tr('download')}</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -416,7 +424,7 @@ function LanguagePacksScreen({ theme, onBack }) {
           <TouchableOpacity style={S.packWifiRow} onPress={() => setWifiOnly(w => !w)}>
             <MI name={wifiOnly ? 'check-box' : 'check-box-outline-blank'} size={20} color={c.iconMid} />
             <MI name="wifi" size={16} color={c.iconDim} />
-            <Text style={S.packWifiTxt}>Скачивать только по Wi-Fi</Text>
+            <Text style={S.packWifiTxt}>{tr('wifiOnly')}</Text>
           </TouchableOpacity>
 
           {!!error && (
@@ -452,9 +460,10 @@ function AuthThemeToggle({ theme, toggleTheme, c, S }) {
 }
 
 // ── Sign in ──────────────────────────────────────────────────────────────────
-function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGoToSignUp, onGuest }) {
+function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGoToSignUp, onGuest, lang }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+  const tr = (key, vars) => t(lang, key, vars);
 
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
@@ -478,10 +487,10 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
       } else if (data.error === 'email_not_verified') {
         onNeedsVerification(data.userId, email.trim());
       } else {
-        setError(data.error || 'Не удалось войти');
+        setError(data.error || tr('loginFailedDefault'));
       }
     } catch {
-      setError('Нет соединения с сервером');
+      setError(tr('noServerConnection'));
     }
     setLoading(false);
   };
@@ -493,11 +502,11 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
 
       <View style={S.authLogoWrap}>
         <AuthLogo S={S} />
-        <Text style={S.authTitle}>С возвращением</Text>
-        <Text style={S.authSubtitle}>Войдите, чтобы продолжить</Text>
+        <Text style={S.authTitle}>{tr('welcomeBack')}</Text>
+        <Text style={S.authSubtitle}>{tr('signInSubtitle')}</Text>
       </View>
 
-      <Text style={S.authFieldLbl}>Email</Text>
+      <Text style={S.authFieldLbl}>{tr('emailLabel')}</Text>
       <View style={S.authFieldBox}>
         <TextInput
           style={S.authFieldInput}
@@ -510,7 +519,7 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
         />
       </View>
 
-      <Text style={S.authFieldLbl}>Пароль</Text>
+      <Text style={S.authFieldLbl}>{tr('passwordLabel')}</Text>
       <View style={S.authFieldBox}>
         <TextInput
           style={S.authFieldInput}
@@ -533,7 +542,7 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
       )}
 
       {/* No reset flow yet — plain label, not a dead-end tap target */}
-      <Text style={[S.authLink, S.authLinkEnd]}>Забыли пароль?</Text>
+      <Text style={[S.authLink, S.authLinkEnd]}>{tr('forgotPassword')}</Text>
 
       <TouchableOpacity
         style={[S.authPrimaryBtn, loading && S.authPrimaryBtnDisabled]}
@@ -542,28 +551,29 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
       >
         {loading
           ? <ActivityIndicator color={c.authPrimaryText} />
-          : <Text style={S.authPrimaryBtnTxt}>Войти</Text>}
+          : <Text style={S.authPrimaryBtnTxt}>{tr('loginBtn')}</Text>}
       </TouchableOpacity>
 
       <View style={S.authFooterRow}>
-        <Text style={S.authFooterTxt}>Нет аккаунта? </Text>
+        <Text style={S.authFooterTxt}>{tr('noAccount')}</Text>
         <TouchableOpacity onPress={onGoToSignUp}>
-          <Text style={S.authLinkBold}>Зарегистрироваться</Text>
+          <Text style={S.authLinkBold}>{tr('signUpLink')}</Text>
         </TouchableOpacity>
       </View>
 
       <TouchableOpacity style={S.authGuestBtn} onPress={onGuest}>
-        <Text style={S.authGuestBtnTxt}>Продолжить как гость</Text>
-        <Text style={S.authGuestBtnSub}>без контекстного перевода</Text>
+        <Text style={S.authGuestBtnTxt}>{tr('guestBtn')}</Text>
+        <Text style={S.authGuestBtnSub}>{tr('guestSub')}</Text>
       </TouchableOpacity>
     </View>
   );
 }
 
 // ── Sign up ──────────────────────────────────────────────────────────────────
-function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn }) {
+function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn, lang }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+  const tr = (key, vars) => t(lang, key, vars);
 
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
@@ -578,15 +588,15 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn })
   // shown in the design (A2 all-green, A3 mostly-red) — medium is my own
   // reasonable fill-in for the tier the design doesn't depict.
   const tierColor = passed <= 1 ? c.fieldError : passed <= 3 ? c.warnColor : c.btnSaveText;
-  const tierLabel = passed <= 1 ? 'Слабый пароль' : passed <= 3 ? 'Средний пароль' : 'Надёжный пароль';
+  const tierLabel = passed <= 1 ? tr('weakPassword') : passed <= 3 ? tr('mediumPassword') : tr('strongPassword');
   const emailValid = EMAIL_RE.test(email.trim());
   const canSubmit  = emailValid && passed === 4 && !loading;
 
   const requirements = [
-    { key: 'minLength',  label: 'Минимум 8 символов' },
-    { key: 'upperLower', label: 'Заглавная и строчная буквы' },
-    { key: 'digit',      label: 'Хотя бы одна цифра' },
-    { key: 'special',    label: 'Спецсимвол (!@#$…)' },
+    { key: 'minLength',  labelKey: 'reqMinLength' },
+    { key: 'upperLower', labelKey: 'reqUpperLower' },
+    { key: 'digit',      labelKey: 'reqDigit' },
+    { key: 'special',    labelKey: 'reqSpecial' },
   ];
 
   const handleSubmit = async () => {
@@ -604,10 +614,10 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn })
       if (resp.ok) {
         onNeedsVerification(data.userId, email.trim());
       } else {
-        setError(data.error || 'Не удалось создать аккаунт');
+        setError(data.error || tr('signupFailedDefault'));
       }
     } catch {
-      setError('Нет соединения с сервером');
+      setError(tr('noServerConnection'));
     }
     setLoading(false);
   };
@@ -619,13 +629,13 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn })
         <TouchableOpacity onPress={onGoToSignIn} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
           <MI name="arrow-back" size={24} color={c.backIcon} />
         </TouchableOpacity>
-        <Text style={S.authHeaderTitle}>Создать аккаунт</Text>
+        <Text style={S.authHeaderTitle}>{tr('createAccount')}</Text>
         <View style={{ marginLeft: 'auto' }}>
           <AuthThemeToggle theme={theme} toggleTheme={toggleTheme} c={c} S={S} />
         </View>
       </View>
 
-      <Text style={S.authFieldLbl}>Email</Text>
+      <Text style={S.authFieldLbl}>{tr('emailLabel')}</Text>
       <View style={[S.authFieldBox, touched && !emailValid && S.authFieldBoxError]}>
         <TextInput
           style={S.authFieldInput}
@@ -640,11 +650,11 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn })
       {touched && !emailValid && (
         <View style={S.authErrorRow}>
           <MI name="error" size={14} color={c.fieldError} />
-          <Text style={S.authErrorTxt}>Введите корректный email</Text>
+          <Text style={S.authErrorTxt}>{tr('invalidEmail')}</Text>
         </View>
       )}
 
-      <Text style={S.authFieldLbl}>Пароль</Text>
+      <Text style={S.authFieldLbl}>{tr('passwordLabel')}</Text>
       <View style={[S.authFieldBox, touched && passed < 4 && S.authFieldBoxError]}>
         <TextInput
           style={S.authFieldInput}
@@ -678,7 +688,7 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn })
                 color={show ? (met ? c.btnSaveText : c.fieldError) : c.iconDim}
               />
               <Text style={[S.reqTxt, { color: show ? (met ? c.iconDim : c.fieldError) : c.iconDim }]}>
-                {r.label}
+                {tr(r.labelKey)}
               </Text>
             </View>
           );
@@ -699,7 +709,7 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn })
       >
         {loading
           ? <ActivityIndicator color={c.authPrimaryText} />
-          : <Text style={[S.authPrimaryBtnTxt, !canSubmit && S.authPrimaryBtnTxtDisabled]}>Продолжить</Text>}
+          : <Text style={[S.authPrimaryBtnTxt, !canSubmit && S.authPrimaryBtnTxtDisabled]}>{tr('continueBtn')}</Text>}
       </TouchableOpacity>
     </View>
   );
@@ -709,9 +719,10 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn })
 const CODE_LENGTH   = 6;
 const RESEND_COOLDOWN_S = 60;
 
-function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack }) {
+function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack, lang }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+  const tr = (key, vars) => t(lang, key, vars);
 
   const [code,       setCode]       = useState('');
   const [loading,    setLoading]    = useState(false);
@@ -739,12 +750,12 @@ function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack }) {
       if (resp.ok) {
         onSuccess(data.token, data.user);
       } else {
-        setError(data.error || 'Неверный код');
+        setError(data.error || tr('invalidCodeDefault'));
         if (typeof data.attemptsRemaining === 'number') setAttemptsLeft(data.attemptsRemaining);
         setCode('');
       }
     } catch {
-      setError('Нет соединения с сервером');
+      setError(tr('noServerConnection'));
     }
     setLoading(false);
   };
@@ -783,9 +794,9 @@ function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack }) {
       <View style={S.codeHintIcon}>
         <MI name="mark-email-read" size={28} color={c.linkColor} />
       </View>
-      <Text style={S.authTitle}>Введите код</Text>
+      <Text style={S.authTitle}>{tr('enterCode')}</Text>
       <Text style={S.authSubtitle}>
-        Мы отправили 6-значный код на{'\n'}
+        {tr('codeSentTo')}{'\n'}
         <Text style={{ color: c.textStrong }}>{email}</Text>
       </Text>
 
@@ -820,7 +831,7 @@ function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack }) {
         <View style={[S.authErrorRow, { marginBottom: 24 }]}>
           <MI name="error" size={14} color={c.fieldError} />
           <Text style={S.authErrorTxt}>
-            {error}{attemptsLeft != null ? `. Осталось ${attemptsLeft} попытки` : ''}
+            {error}{attemptsLeft != null ? tr('attemptsRemaining', { n: attemptsLeft }) : ''}
           </Text>
         </View>
       )}
@@ -828,13 +839,45 @@ function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack }) {
       {loading && <ActivityIndicator color={c.linkColor} style={{ marginBottom: 20 }} />}
 
       {cooldown > 0 ? (
-        <Text style={S.resendTxt}>Отправить повторно через <Text style={{ color: c.textStrong }}>0:{String(cooldown).padStart(2, '0')}</Text></Text>
+        <Text style={S.resendTxt}>{tr('resendIn')} <Text style={{ color: c.textStrong }}>0:{String(cooldown).padStart(2, '0')}</Text></Text>
       ) : (
         <TouchableOpacity onPress={handleResend}>
-          <Text style={[S.resendTxt, S.authLink]}>Отправить код повторно</Text>
+          <Text style={[S.resendTxt, S.authLink]}>{tr('resendCode')}</Text>
         </TouchableOpacity>
       )}
     </View>
+  );
+}
+
+// ── Language picker sheet (shared: interface language + source language) ──
+function LanguageSheet({ visible, onClose, options, selected, onSelect, title, c, S }) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <TouchableOpacity style={S.overlay} activeOpacity={1} onPress={onClose}>
+        <View style={S.sheet} onStartShouldSetResponder={() => true}>
+          <View style={S.sheetHead}>
+            <Text style={S.sheetTitle}>{title}</Text>
+            <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+              <MI name="close" size={22} color={c.sheetClose} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={S.sheetList} showsVerticalScrollIndicator={false}>
+            {options.map(o => (
+              <TouchableOpacity
+                key={o.code}
+                style={[S.sheetItem, selected === o.code && S.sheetItemOn]}
+                onPress={() => { onSelect(o.code); onClose(); }}
+              >
+                <View style={S.sheetItemLabel}>
+                  <Text style={[S.sheetItemTxt, selected === o.code && S.sheetItemTxtOn]}>{o.label}</Text>
+                </View>
+                {selected === o.code && <MI name="check" size={18} color={c.pinAccent} />}
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      </TouchableOpacity>
+    </Modal>
   );
 }
 
@@ -887,6 +930,41 @@ export default function App() {
   };
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+
+  // ── Interface language (chrome only — see i18n.js) ──────────────────────────
+  const [interfaceLang, setInterfaceLang] = useState('ru');
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem(INTERFACE_LANG_KEY);
+        if (saved && INTERFACE_LANGUAGES.some(l => l.code === saved)) setInterfaceLang(saved);
+      } catch {}
+    })();
+  }, []);
+  const changeInterfaceLang = code => {
+    setInterfaceLang(code);
+    AsyncStorage.setItem(INTERFACE_LANG_KEY, code).catch(() => {});
+  };
+  const tr = (key, vars) => t(interfaceLang, key, vars);
+  const [showInterfaceLangPicker, setShowInterfaceLangPicker] = useState(false);
+
+  // ── Source language (Russian-bubble side; the other bubble is always Korean) ─
+  const [sourceLang, setSourceLang] = useState('ru');
+  const sourceLangRef = useRef('ru');
+  useEffect(() => { sourceLangRef.current = sourceLang; }, [sourceLang]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem(SOURCE_LANG_KEY);
+        if (saved && SOURCE_LANGUAGES.some(l => l.code === saved)) setSourceLang(saved);
+      } catch {}
+    })();
+  }, []);
+  const changeSourceLang = code => {
+    setSourceLang(code);
+    AsyncStorage.setItem(SOURCE_LANG_KEY, code).catch(() => {});
+  };
+  const [showSourceLangPicker, setShowSourceLangPicker] = useState(false);
 
   // ── Auth ────────────────────────────────────────────────────────────────────
   const [authUser,     setAuthUser]     = useState(null);
@@ -963,18 +1041,21 @@ export default function App() {
   const [scenarioId,  setScenarioId]  = useState(FALLBACK_SCENARIOS[0].id);
   const scenarioIdRef = useRef(scenarioId);
   useEffect(() => { scenarioIdRef.current = scenarioId; }, [scenarioId]);
-  const scenario = scenarios.find(s => s.id === scenarioId)?.name || '';
+  const scenario = scenarioName(interfaceLang, scenarios.find(s => s.id === scenarioId));
 
   // Scenario context requires an account (guests) and a live backend
   // (scenario prompts are fetched/edited server-side) — block the picker
   // and explain why instead of opening a sheet that can't do anything useful.
+  // Uses a themed in-app card (scenarioNotice) instead of the native
+  // Alert.alert, matching the rest of the app's dark/light design system.
+  const [scenarioNotice, setScenarioNotice] = useState(null); // { title, text }
   const openScenarioPicker = () => {
     if (isGuest) {
-      Alert.alert('Только с аккаунтом', 'Войдите в аккаунт, чтобы использовать перевод по сценариям.');
+      setScenarioNotice({ title: tr('scenarioNoticeAccountTitle'), text: tr('scenarioNoticeAccountText') });
       return;
     }
     if (!isOnline) {
-      Alert.alert('Нет подключения', 'Сценарии доступны только при наличии интернета.');
+      setScenarioNotice({ title: tr('scenarioNoticeOfflineTitle'), text: tr('scenarioNoticeOfflineText') });
       return;
     }
     setShowPicker(true);
@@ -1055,7 +1136,7 @@ export default function App() {
   const testConnection = async () => {
     clearTimeout(connResetTimer.current);
     setConnStatus('checking');
-    setConnMsg('проверка…');
+    setConnMsg(tr('checking'));
     const started = Date.now();
     try {
       const ctrl = new AbortController();
@@ -1065,14 +1146,14 @@ export default function App() {
       const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.ok) {
         setConnStatus('ok');
-        setConnMsg(`${Date.now() - started} мс`);
+        setConnMsg(tr('msSuffix', { ms: Date.now() - started }));
       } else {
         setConnStatus('bad');
-        setConnMsg('нет связи');
+        setConnMsg(tr('noConnection'));
       }
     } catch {
       setConnStatus('bad');
-      setConnMsg('нет связи');
+      setConnMsg(tr('noConnection'));
     }
     connResetTimer.current = setTimeout(() => setConnStatus('idle'), 2500);
   };
@@ -1152,7 +1233,7 @@ export default function App() {
   const handleCreateScenario = async () => {
     const name = createName.trim();
     const prompt = createPrompt.trim();
-    if (!name || !prompt) { setCreateError('Заполните оба поля'); return; }
+    if (!name || !prompt) { setCreateError(tr('fillBothFields')); return; }
     setCreateSaving(true);
     setCreateError('');
     try {
@@ -1168,10 +1249,10 @@ export default function App() {
         setCreateName(''); setCreatePrompt('');
         setSheetView('list');
       } else {
-        setCreateError(data.error || 'Не удалось создать сценарий');
+        setCreateError(data.error || tr('createFailedDefault'));
       }
     } catch {
-      setCreateError('Нет соединения с сервером');
+      setCreateError(tr('noServerConnection'));
     }
     setCreateSaving(false);
   };
@@ -1186,9 +1267,9 @@ export default function App() {
       const resp = await fetch(`${BACKEND_URL}/scenarios/${s.id}`);
       const data = await resp.json();
       if (resp.ok) setEditPrompt(data.prompt || '');
-      else setEditError(data.error || 'Не удалось загрузить промпт');
+      else setEditError(data.error || tr('loadPromptFailedDefault'));
     } catch {
-      setEditError('Нет соединения с сервером');
+      setEditError(tr('noServerConnection'));
     }
     setEditLoading(false);
   };
@@ -1209,10 +1290,10 @@ export default function App() {
         await fetchScenarios();
         setSheetView('list');
       } else {
-        setEditError(data.error || 'Не удалось сохранить');
+        setEditError(data.error || tr('saveFailedDefault'));
       }
     } catch {
-      setEditError('Нет соединения с сервером');
+      setEditError(tr('noServerConnection'));
     }
     setEditSaving(false);
   };
@@ -1252,7 +1333,7 @@ export default function App() {
         onPress={() => { setScenarioId(s.id); closePicker(); }}
       >
         <Text style={[S.sheetItemTxt, scenarioId === s.id && S.sheetItemTxtOn]} numberOfLines={1}>
-          {s.name}
+          {scenarioName(interfaceLang, s)}
         </Text>
       </TouchableOpacity>
       <TouchableOpacity
@@ -1307,8 +1388,8 @@ export default function App() {
     } else {
       killSilenceTimer();
       if (text) {
-        const fromLang = bubble === 'ru' ? 'русский'   : 'корейский';
-        const toLang   = bubble === 'ru' ? 'корейский' : 'русский';
+        const fromLang = bubble === 'ru' ? LANG_RU_NAME[sourceLangRef.current] : 'корейский';
+        const toLang   = bubble === 'ru' ? 'корейский' : LANG_RU_NAME[sourceLangRef.current];
         doTranslate(text, fromLang, toLang, bubble);
       }
     }
@@ -1317,21 +1398,25 @@ export default function App() {
   useSpeechRecognitionEvent('error', () => { setRecognizing(false); killSilenceTimer(); });
 
   // ── Translation ────────────────────────────────────────────────────────────
-  // Offline fallback: ML Kit translates directly between the bubble sides —
-  // 'ru'/'ko' are already valid ISO codes, no mapping needed. No scenario
-  // context is applied (ML Kit has no concept of a prompt), per the ask that
-  // offline mode work "without internet and without context".
+  // Offline fallback: ML Kit translates directly between the bubble sides.
+  // The Russian-bubble side uses whichever source language is currently
+  // selected (sourceLangRef, see "Source language" above) — 'ko' is fixed for
+  // the other side. No scenario context is applied (ML Kit has no concept of
+  // a prompt), per the ask that offline mode work "without internet and
+  // without context". Note: ML Kit's supported-language set does not include
+  // Uzbek/Kazakh/Kyrgyz/Mongolian, so isModelDownloaded/translate will reject
+  // those with ERR_MLKIT_TRANSLATE — same catch path as "pack not downloaded".
   const offlineTranslate = async (text, sourceBubble) => {
-    const sourceLang = sourceBubble;
-    const targetLang = sourceBubble === 'ru' ? 'ko' : 'ru';
+    const srcCode = sourceBubble === 'ru' ? sourceLangRef.current : 'ko';
+    const tgtCode = sourceBubble === 'ru' ? 'ko' : sourceLangRef.current;
     const [sourceReady, targetReady] = await Promise.all([
-      MlkitTranslate.isModelDownloaded(sourceLang),
-      MlkitTranslate.isModelDownloaded(targetLang),
+      MlkitTranslate.isModelDownloaded(srcCode),
+      MlkitTranslate.isModelDownloaded(tgtCode),
     ]);
     if (!sourceReady || !targetReady) {
       throw new Error('offline model not downloaded');
     }
-    return MlkitTranslate.translate(text, sourceLang, targetLang);
+    return MlkitTranslate.translate(text, srcCode, tgtCode);
   };
 
   const applyOfflineFallback = async (text, sourceBubble) => {
@@ -1351,7 +1436,7 @@ export default function App() {
       setActiveBubble(next);
       activeBubbleRef.current = next;
     } catch {
-      const msg = 'Нет связи, офлайн-пакет не скачан. Скачайте его в меню → Языковые пакеты.';
+      const msg = tr('offlineFallbackMsg');
       if (sourceBubble === 'ru') setKoText(msg); else setRuText(msg);
     }
   };
@@ -1414,7 +1499,7 @@ export default function App() {
     if (!granted) return;
 
     ExpoSpeechRecognitionModule.start({
-      lang: bubble === 'ru' ? 'ru-RU' : 'ko-KR',
+      lang: bubble === 'ru' ? LANG_LOCALE[sourceLangRef.current] : 'ko-KR',
       interimResults: true,
       continuous: false,
     });
@@ -1455,14 +1540,14 @@ export default function App() {
     const text = ruText.trim();
     closeTypingMode();
     Keyboard.dismiss();
-    if (text) doTranslate(text, 'русский', 'корейский', 'ru');
+    if (text) doTranslate(text, LANG_RU_NAME[sourceLangRef.current], 'корейский', 'ru');
   };
 
   const handleKoSubmit = () => {
     const text = koText.trim();
     Keyboard.dismiss();
     closeTypingMode();
-    if (text) doTranslate(text, 'корейский', 'русский', 'ko');
+    if (text) doTranslate(text, 'корейский', LANG_RU_NAME[sourceLangRef.current], 'ko');
   };
 
   // ── Derived state ──────────────────────────────────────────────────────────
@@ -1470,7 +1555,7 @@ export default function App() {
   const ruShowWait = recognizing && activeBubble === 'ko';
   const koShowWait = recognizing && activeBubble === 'ru';
 
-  const ruPlaceholder = (ruShowWait || activeBubble === 'ko') ? PH_RU_WAIT : PH_RU;
+  const ruPlaceholder = (ruShowWait || activeBubble === 'ko') ? tr('phRuWait') : tr('phRu');
   const koPlaceholder = activeBubble === 'ko' ? PH_KO_ACTIVE : PH_KO_WAIT;
 
   const micRecording = bubble => recognizing && activeBubble === bubble;
@@ -1493,6 +1578,7 @@ export default function App() {
         onNeedsVerification={(userId, email) => { setPendingVerify({ userId, email }); setScreen('verify'); }}
         onGoToSignUp={() => setScreen('signup')}
         onGuest={handleContinueAsGuest}
+        lang={interfaceLang}
       />
     );
   }
@@ -1504,6 +1590,7 @@ export default function App() {
         toggleTheme={toggleTheme}
         onNeedsVerification={(userId, email) => { setPendingVerify({ userId, email }); setScreen('verify'); }}
         onGoToSignIn={() => setScreen('signin')}
+        lang={interfaceLang}
       />
     );
   }
@@ -1516,6 +1603,7 @@ export default function App() {
         email={pendingVerify.email}
         onSuccess={handleAuthSuccess}
         onBack={() => { setPendingVerify(null); setScreen('signin'); }}
+        lang={interfaceLang}
       />
     );
   }
@@ -1528,12 +1616,13 @@ export default function App() {
         initialScenarioId={scenarioId}
         onBack={() => setScreen('main')}
         theme={theme}
+        lang={interfaceLang}
       />
     );
   }
 
   if (screen === 'packs') {
-    return <LanguagePacksScreen theme={theme} onBack={() => setScreen('main')} />;
+    return <LanguagePacksScreen theme={theme} onBack={() => setScreen('main')} lang={interfaceLang} sourceLang={sourceLang} />;
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -1609,7 +1698,7 @@ export default function App() {
         {/* ── Gutter: scenario + history between bubbles ── */}
         <View style={S.gutter}>
           <TouchableOpacity style={S.scenBtn} onPress={openScenarioPicker}>
-            <Text style={S.scenTxt} numberOfLines={1}>{isGuest ? 'Без сценария (гость)' : scenario}</Text>
+            <Text style={S.scenTxt} numberOfLines={1}>{isGuest ? tr('noScenarioGuest') : scenario}</Text>
             <MI name="expand-more" size={20} color={c.iconDim} />
           </TouchableOpacity>
           <TouchableOpacity style={S.histBtn} onPress={() => setScreen('history')}>
@@ -1627,7 +1716,7 @@ export default function App() {
             {translating && activeBubble === 'ko' ? (
               <ActivityIndicator color={c.testChecking} size="large" />
             ) : ruShowWait ? (
-              <Text style={S.bubbleWaitPh}>{PH_RU_WAIT}</Text>
+              <Text style={S.bubbleWaitPh}>{tr('phRuWait')}</Text>
             ) : typingBubble === 'ru' ? (
               <TextInput
                 value={ruText}
@@ -1663,11 +1752,18 @@ export default function App() {
           {/* TTS */}
           <TouchableOpacity
             style={[S.ttsBtn, !ruText && S.ttsBtnDim]}
-            onPress={() => handleSpeak(ruText, 'ru-RU')}
+            onPress={() => handleSpeak(ruText, LANG_LOCALE[sourceLang])}
             disabled={!ruText}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
             <MI name="volume-up" size={16} color={c.iconMid} />
+          </TouchableOpacity>
+          {/* Source-language selector — lives inside the speaker's own bubble
+              (bottom-left corner) rather than the control row below, since it's
+              a property of that bubble's content, same reasoning as clear/TTS. */}
+          <TouchableOpacity style={S.langBtn} onPress={() => setShowSourceLangPicker(true)}>
+            <Text style={S.langBtnTxt}>{sourceLang.toUpperCase()}</Text>
+            <MI name="expand-more" size={14} color={c.iconDim} />
           </TouchableOpacity>
         </TouchableOpacity>
 
@@ -1735,44 +1831,83 @@ export default function App() {
           onPress={() => setShowMenu(false)}
         >
           <View style={S.menuDrawer} onStartShouldSetResponder={() => true}>
-            <Text style={S.menuBrand}>RU ⇄ KO Переводчик</Text>
-            <Text style={S.menuSub}>{isGuest ? 'Гость' : (authUser?.email || BACKEND_URL.replace('http://', ''))}</Text>
+            <Text style={S.menuBrand}>{tr('appBrand')}</Text>
+            <Text style={S.menuSub}>{isGuest ? tr('guestLabel') : (authUser?.email || BACKEND_URL.replace('http://', ''))}</Text>
 
             <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); openScenarioPicker(); }}>
               <MI name="list" size={20} color={c.menuIcon} />
-              <Text style={S.menuItemTxt}>Сценарии</Text>
+              <Text style={S.menuItemTxt}>{tr('menuScenarios')}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setScreen('history'); }}>
               <MI name="history" size={20} color={c.menuIcon} />
-              <Text style={S.menuItemTxt}>История</Text>
+              <Text style={S.menuItemTxt}>{tr('menuHistory')}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); testConnection(); }}>
               <MI name="network-check" size={20} color={c.menuIcon} />
-              <Text style={S.menuItemTxt}>Проверить связь</Text>
+              <Text style={S.menuItemTxt}>{tr('menuTestConnection')}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setScreen('packs'); }}>
               <MI name="download" size={20} color={c.menuIcon} />
-              <Text style={S.menuItemTxt}>Языковые пакеты</Text>
+              <Text style={S.menuItemTxt}>{tr('menuLanguagePacks')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setShowInterfaceLangPicker(true); }}>
+              <MI name="language" size={20} color={c.menuIcon} />
+              <Text style={S.menuItemTxt}>{tr('menuInterfaceLanguage')}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[S.menuItem, S.menuItemDivider]} onPress={() => { setShowMenu(false); toggleTheme(); }}>
               <MI name={theme === 'dark' ? 'light-mode' : 'dark-mode'} size={20} color={c.themeToggleIcon} />
-              <Text style={S.menuItemTxt}>{theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</Text>
+              <Text style={S.menuItemTxt}>{theme === 'dark' ? tr('lightTheme') : tr('darkTheme')}</Text>
             </TouchableOpacity>
             {/* Not in the design (its menu drawer wasn't updated for a logged-in
                 state) — added because without it there'd be no way to log out. */}
             {isGuest ? (
               <TouchableOpacity style={S.menuItem} onPress={handleGuestSignIn}>
                 <MI name="login" size={20} color={c.menuIcon} />
-                <Text style={S.menuItemTxt}>Войти</Text>
+                <Text style={S.menuItemTxt}>{tr('menuLogin')}</Text>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity style={S.menuItem} onPress={handleLogout}>
                 <MI name="logout" size={20} color={c.menuIcon} />
-                <Text style={S.menuItemTxt}>Выйти</Text>
+                <Text style={S.menuItemTxt}>{tr('menuLogout')}</Text>
               </TouchableOpacity>
             )}
           </View>
         </TouchableOpacity>
+      )}
+
+      {/* ── Interface language picker ── */}
+      <LanguageSheet
+        visible={showInterfaceLangPicker}
+        onClose={() => setShowInterfaceLangPicker(false)}
+        options={INTERFACE_LANGUAGES}
+        selected={interfaceLang}
+        onSelect={changeInterfaceLang}
+        title={tr('menuInterfaceLanguage')}
+        c={c} S={S}
+      />
+
+      {/* ── Source-bubble language picker ── */}
+      <LanguageSheet
+        visible={showSourceLangPicker}
+        onClose={() => setShowSourceLangPicker(false)}
+        options={SOURCE_LANGUAGES}
+        selected={sourceLang}
+        onSelect={changeSourceLang}
+        title={tr('sourceLanguage')}
+        c={c} S={S}
+      />
+
+      {/* ── Scenario-unavailable notice (themed, replaces Alert.alert) ── */}
+      {scenarioNotice && (
+        <View style={S.noticeScrim}>
+          <View style={S.confirmCard}>
+            <Text style={S.confirmTitle}>{scenarioNotice.title}</Text>
+            <Text style={S.confirmText}>{scenarioNotice.text}</Text>
+            <TouchableOpacity style={S.noticeBtn} onPress={() => setScenarioNotice(null)}>
+              <Text style={S.btnSaveTxt}>{tr('ok')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       )}
 
       {/* ── Korean typing overlay ─────────────────────────────────────────────
@@ -1819,7 +1954,7 @@ export default function App() {
             {sheetView === 'list' && (
               <>
                 <View style={S.sheetHead}>
-                  <Text style={S.sheetTitle}>Сценарий</Text>
+                  <Text style={S.sheetTitle}>{tr('scenarioSheetTitle')}</Text>
                   <TouchableOpacity onPress={closePicker} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                     <MI name="close" size={22} color={c.sheetClose} />
                   </TouchableOpacity>
@@ -1830,24 +1965,24 @@ export default function App() {
                     <>
                       <View style={S.sheetSectionLbl}>
                         <MI name="push-pin" size={12} color={c.pinAccent} />
-                        <Text style={[S.sheetSectionLblTxt, { color: c.pinAccent }]}>Закреплено ({pinnedScenarios.length}/{MAX_PINNED})</Text>
+                        <Text style={[S.sheetSectionLblTxt, { color: c.pinAccent }]}>{tr('pinnedSection', { n: pinnedScenarios.length, max: MAX_PINNED })}</Text>
                       </View>
                       {pinnedScenarios.map(s => renderScenarioRow(s, true))}
                     </>
                   )}
                   {restScenarios.length > 0 && (
                     <>
-                      <Text style={S.sheetSectionPlainTxt}>Остальные</Text>
+                      <Text style={S.sheetSectionPlainTxt}>{tr('restSection')}</Text>
                       {restScenarios.map(s => renderScenarioRow(s, false))}
                     </>
                   )}
                 </ScrollView>
 
-                {pinToast && <Text style={S.pinToast}>Можно закрепить не более {MAX_PINNED}</Text>}
+                {pinToast && <Text style={S.pinToast}>{tr('pinLimitToast', { max: MAX_PINNED })}</Text>}
 
                 <TouchableOpacity style={S.addBtn} onPress={() => setSheetView('create')}>
                   <MI name="add" size={20} color={c.iconDim} />
-                  <Text style={S.addBtnTxt}>Добавить сценарий</Text>
+                  <Text style={S.addBtnTxt}>{tr('addScenario')}</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -1858,24 +1993,24 @@ export default function App() {
                   <TouchableOpacity onPress={() => setSheetView('list')} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                     <MI name="arrow-back" size={22} color={c.backIcon} />
                   </TouchableOpacity>
-                  <Text style={S.subHeadTitle}>Новый сценарий</Text>
+                  <Text style={S.subHeadTitle}>{tr('newScenario')}</Text>
                 </View>
 
-                <Text style={S.fieldLbl}>Название</Text>
+                <Text style={S.fieldLbl}>{tr('nameLabel')}</Text>
                 <TextInput
                   style={S.fieldInput}
                   value={createName}
                   onChangeText={setCreateName}
-                  placeholder="Например: На рынке"
+                  placeholder={tr('namePlaceholder')}
                   placeholderTextColor={c.fieldPh}
                 />
 
-                <Text style={S.fieldLbl}>Промпт</Text>
+                <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
                 <TextInput
                   style={S.fieldTextarea}
                   value={createPrompt}
                   onChangeText={setCreatePrompt}
-                  placeholder={'Опишите контекст и стиль перевода.\n{fromLang} и {toLang} подставятся автоматически.'}
+                  placeholder={tr('promptPlaceholder')}
                   placeholderTextColor={c.fieldPh}
                   multiline
                   textAlignVertical="top"
@@ -1885,12 +2020,12 @@ export default function App() {
 
                 <View style={S.formActions}>
                   <TouchableOpacity style={S.btnNeutral} onPress={() => setSheetView('list')} disabled={createSaving}>
-                    <Text style={S.btnNeutralTxt}>Отмена</Text>
+                    <Text style={S.btnNeutralTxt}>{tr('cancel')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={S.btnSave} onPress={handleCreateScenario} disabled={createSaving}>
                     {createSaving
                       ? <ActivityIndicator color={c.btnSaveText} size="small" />
-                      : <Text style={S.btnSaveTxt}>Создать</Text>}
+                      : <Text style={S.btnSaveTxt}>{tr('create')}</Text>}
                   </TouchableOpacity>
                 </View>
               </>
@@ -1902,10 +2037,10 @@ export default function App() {
                   <TouchableOpacity onPress={() => setSheetView('list')} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                     <MI name="arrow-back" size={22} color={c.backIcon} />
                   </TouchableOpacity>
-                  <Text style={S.subHeadTitle} numberOfLines={1}>{editingScenario.name}</Text>
+                  <Text style={S.subHeadTitle} numberOfLines={1}>{scenarioName(interfaceLang, editingScenario)}</Text>
                 </View>
 
-                <Text style={S.fieldLbl}>Промпт</Text>
+                <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
                 {editLoading ? (
                   <ActivityIndicator color={c.testChecking} style={{ marginVertical: 20 }} />
                 ) : (
@@ -1923,12 +2058,12 @@ export default function App() {
 
                 <View style={S.formActions}>
                   <TouchableOpacity style={S.btnNeutral} onPress={() => setSheetView('list')} disabled={editSaving}>
-                    <Text style={S.btnNeutralTxt}>Отмена</Text>
+                    <Text style={S.btnNeutralTxt}>{tr('cancel')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={S.btnSave} onPress={handleSaveEdit} disabled={editSaving || editLoading}>
                     {editSaving
                       ? <ActivityIndicator color={c.btnSaveText} size="small" />
-                      : <Text style={S.btnSaveTxt}>Сохранить</Text>}
+                      : <Text style={S.btnSaveTxt}>{tr('save')}</Text>}
                   </TouchableOpacity>
                 </View>
               </>
@@ -1937,16 +2072,16 @@ export default function App() {
             {deleteTarget && (
               <View style={S.confirmScrim}>
                 <View style={S.confirmCard}>
-                  <Text style={S.confirmTitle}>Удалить сценарий?</Text>
+                  <Text style={S.confirmTitle}>{tr('deleteScenarioTitle')}</Text>
                   <Text style={S.confirmText}>
-                    «{deleteTarget.name}» и его промпт будут удалены без возможности восстановить.
+                    {tr('deleteScenarioText', { name: scenarioName(interfaceLang, deleteTarget) })}
                   </Text>
                   <View style={S.formActions}>
                     <TouchableOpacity style={S.btnNeutral} onPress={() => setDeleteTarget(null)}>
-                      <Text style={S.btnNeutralTxt}>Нет</Text>
+                      <Text style={S.btnNeutralTxt}>{tr('no')}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={S.btnDanger} onPress={handleDeleteScenario}>
-                      <Text style={S.btnDangerTxt}>Да</Text>
+                      <Text style={S.btnDangerTxt}>{tr('yes')}</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -2073,6 +2208,16 @@ function makeStyles(c, theme) {
     backgroundColor: c.chipInsetBg, justifyContent: 'center', alignItems: 'center',
   },
   ttsBtnDim: { opacity: c.ttsDimOpacity },
+
+  // Source-language selector — bottom-left corner of the speaker's own bubble
+  // (only the Russian/source bubble renders this; Korean's side is fixed).
+  langBtn: {
+    position: 'absolute', bottom: 10, left: 12,
+    minHeight: 28, paddingHorizontal: 10, borderRadius: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: c.chipInsetBg, justifyContent: 'center',
+  },
+  langBtnTxt: { color: c.iconMid, fontSize: 12, fontWeight: '700' },
 
   // Gutter between bubbles
   gutter: {
@@ -2249,6 +2394,19 @@ function makeStyles(c, theme) {
   },
   confirmTitle: { color: c.confirmTitle, fontSize: 15, fontWeight: '700', marginBottom: 8 },
   confirmText:  { color: c.confirmText, fontSize: 12.5, lineHeight: 19 },
+
+  // Themed notice card (scenario-unavailable) — same look as confirmCard, but
+  // as a full-screen overlay rendered outside the scenario-picker Modal so it
+  // can appear even when that Modal is closed.
+  noticeScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: c.confirmScrim, justifyContent: 'center', alignItems: 'center',
+    padding: 24, zIndex: 200, elevation: 30,
+  },
+  noticeBtn: {
+    marginTop: 16, paddingVertical: 13, borderRadius: 12, alignItems: 'center',
+    backgroundColor: c.btnSaveBg, borderWidth: 1, borderColor: c.btnSaveBorder,
+  },
 
   // ── Auth screens ────────────────────────────────────────────────────────
   authScreen: { flex: 1, backgroundColor: c.authBg, paddingTop: 78, paddingHorizontal: 26 },

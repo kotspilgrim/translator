@@ -17,6 +17,7 @@
         "backgroundColor": "#121212"
       },
       "package": "com.translator.app",
+      "versionCode": 1,
       "permissions": [
         "android.permission.RECORD_AUDIO"
       ]

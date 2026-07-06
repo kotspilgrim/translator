@@ -65,7 +65,7 @@ npm run android                         # then rebuild
 
 `POST /translate` accepts `{ text, fromLang, toLang, context }` where `context` is a **scenario id** (not a display name).
 
-- **Language validation:** `fromLang` and `toLang` must be exactly `'русский'` or `'корейский'` (Russian words, not language codes)
+- **Language validation:** `fromLang` and `toLang` must each be one of `ALLOWED_LANGS` — Russian words, not language codes: `русский`, `корейский`, `английский`, `японский`, `китайский`, `узбекский`, `казахский`, `киргизский`, `монгольский`. The second bubble is always Korean; the first can be any of the others (see "Source language selector" below) — the backend doesn't itself enforce that pairing, it just validates both values are known words.
 - **Prompt loading:** resolves `context` against the scenario registry (see below), reads `backend/prompts/<file>`, substitutes `{fromLang}` and `{toLang}` placeholders. If the id isn't registered, `context` is used verbatim as free-text context (backward-compat fallback).
 - **Security:** helmet, CORS (`origin: false`), rate limit (30 req/min, also applied to `/scenarios` and `/health`), max text 1000 chars
 - **Supabase logging:** if `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` are in `.env`, each translation is fire-and-forget inserted into the `translations` table
@@ -86,7 +86,7 @@ npm run android                         # then rebuild
 
 Email + password signup with email-code verification, backed by Supabase Postgres tables created by `backend/migrations/001_users_scenarios_auth.sql` and `002_email_verification_stub.sql` (run by hand in the Supabase SQL editor — this repo has no migration runner). `backend/supabaseClient.js` holds the one shared `supabase` client (`server.js` and `auth.js` both import it, avoiding a circular require). Every `/auth` route 503s up front if Supabase isn't configured — unlike translation logging, auth isn't optional.
 
-- `POST /auth/signup` `{ email, password, name? }` — validates email format and 4 password rules (≥8 chars, upper+lower case, digit, special char — same rule set `frontend/App.js`'s `checkPasswordRules` mirrors for live UI feedback). Hashes with `bcryptjs`, generates a 6-digit code (10 min TTL, 5 max attempts), **stubs the email send as a `console.log`** — the code is only ever written to `users.verification_code`, never returned in the API response. Signing up again with an unverified email resumes that row instead of erroring, so an abandoned signup isn't a dead end.
+- `POST /auth/signup` `{ email, password, name? }` — validates email format and 4 password rules (≥8 chars, upper+lower case, digit, special char — same rule set `frontend/App.js`'s `checkPasswordRules` mirrors for live UI feedback). Hashes with `bcryptjs`, generates a 6-digit code (10 min TTL, 5 max attempts), sends it via `sendVerificationCode()` (`backend/email.js`, see below) — the code is only ever written to `users.verification_code`, never returned in the API response. Signing up again with an unverified email resumes that row instead of erroring, so an abandoned signup isn't a dead end.
 - `POST /auth/verify-email` `{ userId, code }` → sets `email_verified = true`, clears the code fields, returns `{ token, user }`.
 - `POST /auth/resend-code` `{ userId }` — regenerates the code, resets attempts.
 - `POST /auth/login` `{ email, password }` → `403 { error: 'email_not_verified', userId }` if the account hasn't verified yet (frontend uses this to redirect into the code screen instead of a dead-end error); otherwise `{ token, user }`.
@@ -95,7 +95,7 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 
 **Explicitly not wired up yet:** `/translate`, `/scenarios`, and history don't require login or filter by `user_id`/`scenario_id` — the columns exist on `translations` (migration 001) but nothing populates them. That's a deliberate follow-up, not an oversight; see the plan history in this repo's conversation log if you need the reasoning.
 
-**Real email delivery is stubbed.** Swapping in a provider (Resend/SendGrid/etc.) only touches the `console.log(...)` calls in `auth.js`'s `signup`/`resend-code` handlers — nothing else in the flow changes.
+**Email delivery (`backend/email.js`):** `sendVerificationCode(to, code)` always `console.log`s the code first (harmless on a self-hosted box, keeps the old local-dev flow working), then — only if `RESEND_API_KEY` is set — sends via the [Resend](https://resend.com) SDK using `EMAIL_FROM` as the sender. Both env vars are optional: with neither set, behavior is identical to before this existed (console-only). A send failure is logged and swallowed rather than failing the request — the code is already in the DB, and `/auth/resend-code` exists precisely so the user can ask for another attempt. **`EMAIL_FROM` must be on a domain verified in the Resend dashboard** (DNS SPF/DKIM records) — without a verified domain, Resend's sandbox mode only delivers to the email address the Resend account itself signed up with, which won't work for real users.
 
 ### Frontend (`frontend/App.js`)
 
@@ -113,7 +113,7 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 2. Korean mic button + flip button (physical top, Korean person's side)
 3. Korean bubble (dark panel, text rotated 180° by default)
 4. Gutter: scenario selector + history button
-5. Russian bubble (dark panel)
+5. Russian bubble (dark panel) — bottom-left corner also holds the source-language selector chip (`langBtn`, showing the 2-letter code, e.g. "RU"), alongside the existing clear/TTS overlay buttons
 6. Russian mic button + connection-test button (physical bottom) — the test button sits in the row's far corner (`position:absolute, right:14`), deliberately away from the mic so it can't be hit by accident
 
 **Key state:**
@@ -126,6 +126,8 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 - `pinnedIds` — up to `MAX_PINNED` (3) scenario ids, persisted in `AsyncStorage` under `'translator_pinned_scenarios'`; pinned scenarios render in their own section above the rest in the picker sheet
 - `typingBubble` — `null | 'ru' | 'ko'` — which side is in text-input mode
 - `isOnline` / `isOnlineRef` — connectivity state from `@react-native-community/netinfo`'s `NetInfo.addEventListener` (`state.isConnected && state.isInternetReachable !== false`); the ref mirror exists for the same reason as `scenarioIdRef` — `doTranslate` is read from the speech-recognition `'result'` event callback
+- `interfaceLang` — one of `INTERFACE_LANGUAGES` (`frontend/i18n.js`), persisted under `'translator_interface_lang'`; drives the `tr(key, vars)` helper (`= (key, vars) => t(interfaceLang, key, vars)`) used for all UI chrome text. No ref mirror needed — nothing reads it from a stale async callback.
+- `sourceLang` / `sourceLangRef` — one of `SOURCE_LANGUAGES` (`frontend/i18n.js`; everything in `INTERFACE_LANGUAGES` except Korean), persisted under `'translator_source_lang'`; the ref mirror exists for the same stale-closure reason as `scenarioIdRef` — `doTranslate`'s `fromLang`/`toLang`, the mic's STT locale, and offline `MlkitTranslate` language codes are all read from callbacks that can't rely on the latest render's closure
 
 **Conversation flow:** idle → recording → translating → waiting → (direction flips) → idle
 
@@ -145,7 +147,32 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 
 Deleting asks for confirmation first: tapping the trash icon sets `deleteTarget`, which renders a small "Удалить сценарий? Да/Нет" card over the sheet instead of deleting immediately.
 
-**Scenario context requires an account and a live backend.** Every entry point into the picker (the scenario row's `onPress` and the menu drawer's "Сценарии" item) goes through `openScenarioPicker`, which blocks and shows an `Alert` instead of opening the sheet: "Только с аккаунтом" for guests, "Нет подключения" when `isOnline` is false. There's no third combined state — a guest is blocked regardless of connectivity, since scenario prompts are fetched/edited server-side either way.
+**Scenario context requires an account and a live backend.** Every entry point into the picker (the scenario row's `onPress` and the menu drawer's "Сценарии" item) goes through `openScenarioPicker`, which blocks and sets `scenarioNotice` (`{ title, text }`) instead of opening the sheet: an "account required" notice for guests, a "no connection" notice when `isOnline` is false. There's no third combined state — a guest is blocked regardless of connectivity, since scenario prompts are fetched/edited server-side either way. `scenarioNotice` renders as a themed card (`S.noticeScrim` + the same `S.confirmCard`/`confirmTitle`/`confirmText` styles the delete-confirmation card uses) at the root of the main screen — not a native `Alert.alert` — so it matches the rest of the app's dark/light design system and stays visible even though it's triggered before the picker `Modal` itself ever opens.
+
+## Interface language (i18n)
+
+`frontend/i18n.js` covers **UI chrome only** — menu items, screen titles/labels, buttons, form validation and error messages, the scenario picker sheet, the themed notices. It deliberately does **not** touch bubble content: recognized speech, translations, scenario names (all come from the backend/conversation itself), or the Korean typing overlay's hint/placeholder (`한국어 텍스트 입력 · Enter로 전송`, `텍스트를 입력하세요...`), since those are addressed to whichever person is actually speaking Korean, not to the reader of the interface.
+
+- **`INTERFACE_LANGUAGES`** — 9 entries, native autonyms: Russian (default), English, 한국어, 日本語, 中文, Oʻzbekcha, Қазақша, Кыргызча, Монгол.
+- **`S`** (the dictionary, keyed by string id → `{ ru, en, ko, ja, zh, uz, kk, ky, mn }`) and **`t(lang, key, vars)`** — `vars` fills `{placeholder}` tokens (e.g. `t(lang, 'attemptsRemaining', { n: 3 })`). Falls back to Russian, then the raw key, if a translation is missing.
+- App-level state `interfaceLang` (persisted `'translator_interface_lang'`) plus a local `tr = (key, vars) => t(interfaceLang, key, vars)` closure is the pattern used in `App()`; every other screen component (`HistoryScreen`, `LanguagePacksScreen`, `SignInScreen`, `SignUpScreen`, `VerifyCodeScreen`) takes `lang` as a prop and defines its own identical `tr` closure — same pattern as each screen computing its own `c`/`S` from a `theme` prop.
+- **Two exceptions inside "bubble content" that DO follow `interfaceLang`, because they're chrome (instructional hints/labels), not conversation content:** the Russian/source bubble's empty-state placeholders (`tr('phRu')`/`tr('phRuWait')`, replacing the old module-level `PH_RU`/`PH_RU_WAIT` constants — the Korean bubble's `PH_KO_WAIT`/`PH_KO_ACTIVE` stay fixed Korean, since that side's language never changes), and **built-in scenario display names**. The latter are resolved via `scenarioName(lang, scenario)` (`frontend/i18n.js`) against a `SCENARIO_NAMES` map keyed by the backend's scenario id (`stranger-on-street`, `v-magazine`, etc.) — every place a scenario name is rendered (gutter button, picker sheet rows, edit-view header, delete-confirmation text, history screen's chip/dropdown) goes through this helper instead of reading `scenario.name` directly. Custom (non-built-in) scenarios have no `SCENARIO_NAMES` entry, so the helper falls back to the raw name the user typed — free-text names aren't auto-translated.
+- Changed from the menu drawer's "Язык интерфейса" item, which opens the shared `LanguageSheet` modal (see below) listing `INTERFACE_LANGUAGES`.
+- Translation quality for uz/kk/ky/mn is best-effort (LLM-generated, not reviewed by a native speaker) — flag for review before treating it as production-grade copy.
+
+**`LanguageSheet`** (`{ visible, onClose, options, selected, onSelect, title, c, S }`) is a small shared modal — a scrollable list of `{ code, label }` options with a checkmark on the selected row — reused for both the interface-language picker and the source-language picker below, styled with the same `S.overlay`/`S.sheet`/`S.sheetItem*` tokens as the scenario picker sheet.
+
+## Source language selector
+
+The **second bubble (top) is always Korean.** The first bubble (bottom, historically "the Russian bubble") can now speak/type in any of `SOURCE_LANGUAGES` (`frontend/i18n.js` — `INTERFACE_LANGUAGES` minus Korean: ru default, en, ja, zh, uz, kk, ky, mn), chosen via the `langBtn` chip anchored to the bottom-left corner *inside that bubble itself* (same overlay pattern as `clearBtn`/`ttsBtn` — shows the 2-letter code, opens the shared `LanguageSheet`). It lives inside the bubble rather than the mic row below because it's a property of that bubble's content, not a screen-level control. State: `sourceLang`/`sourceLangRef`, persisted `'translator_source_lang'`.
+
+Changing it re-points every place that used to hardcode "Russian":
+- **STT locale** — `frontend/i18n.js`'s `LANG_LOCALE` maps each code to a BCP-47 tag (`ru-RU`, `en-US`, `ja-JP`, `zh-CN`, `uz-UZ`, `kk-KZ`, `ky-KG`, `mn-MN`) passed to `ExpoSpeechRecognitionModule.start({ lang: ... })`.
+- **TTS** — `handleSpeak(ruText, LANG_LOCALE[sourceLang])` instead of a hardcoded `'ru-RU'`.
+- **Backend prompt language names** — `LANG_RU_NAME` maps each code to the Russian word the backend's prompt templates expect (`английский`, `японский`, etc. — `backend/server.js`'s `ALLOWED_LANGS`, see Backend section above). `doTranslate`'s `fromLang`/`toLang` args use `LANG_RU_NAME[sourceLangRef.current]` instead of the literal `'русский'`.
+- **Offline `MlkitTranslate` codes** — `offlineTranslate` now resolves `srcCode`/`tgtCode` from `sourceLangRef.current` (Russian-bubble side) and `'ko'` (fixed) instead of assuming `'ru'`/`'ko'`. **Caveat:** Google ML Kit's on-device Translate does not support Uzbek, Kazakh, Kyrgyz, or Mongolian — `isModelDownloaded`/`translate` for those codes reject with `ERR_MLKIT_TRANSLATE` (native `UnsupportedLanguageException`), which surfaces through the exact same "pack not downloaded" catch path as a legitimately-missing pack. Offline translation for those four languages is effectively unavailable; only the online (`/translate`) path works for them.
+- **Language Packs screen** — no longer a fixed ru/ko pair; `LanguagePacksScreen` now takes a `sourceLang` prop and computes its two rows as `[currently-selected source language, Korean]`, since offline translation only ever runs between those two. Switching the source-bubble language changes which pack pair is offered for download.
+- **STT/TTS device support is not guaranteed** for uz/kk/ky/mn — Android's on-device speech recognizer and TTS engine depend on language packs the OS itself may not ship for these locales, independent of anything this app controls.
 
 ## Theming (dark / light)
 
@@ -201,9 +228,10 @@ Font is loaded via `expo-font` config plugin in `app.json` (copies TTF to native
 const BACKEND_URL = 'http://100.68.162.96:3000'; // Tailscale IP
 ```
 
-- **Tailscale IP** (`100.68.162.96`) — works on any network as long as Tailscale is active on both Windows host and Android phone
+- **Tailscale IP** (`100.68.162.96`) — works on any network as long as Tailscale is active on both Windows host and Android phone; kept as the local-dev option even after the Railway deploy below
 - **LAN IP** (`192.168.35.219`) — fallback if Tailscale is down, same Wi-Fi only
 - **USB dev** — run `adb reverse tcp:3000 tcp:3000` and set URL to `http://localhost:3000`
+- **Railway (public)** — once deployed (see Future Roadmap), swap to the Railway HTTPS domain for any build meant to work off the dev network (this is required for a Play Store release build — Android blocks plain-HTTP cleartext traffic by default in release builds, so the Tailscale/LAN `http://` options above only work in dev-client debug builds)
 
 **Backend `.env`** must have:
 ```
@@ -211,16 +239,21 @@ OPENAI_API_KEY=sk-...
 SUPABASE_URL=https://...supabase.co        # required for /auth, optional for translation logging
 SUPABASE_SERVICE_KEY=eyJ...               # required for /auth, optional for translation logging
 JWT_SECRET=...                            # required for /auth — any long random string
+RESEND_API_KEY=re_...                     # optional — verification codes fall back to console.log if unset
+EMAIL_FROM=noreply@yourdomain.com         # must be on a domain verified in Resend
 ```
 
 ## ADB — Development Tips
 
 **Connect device for hot reload (Wi-Fi firewall bypass):**
 ```bash
-adb reverse tcp:8081 tcp:8081
-adb reverse tcp:8082 tcp:8082
+adb reverse tcp:8090 tcp:8090   # Metro — see "Metro port" below
 adb reverse tcp:3000 tcp:3000   # if using localhost backend
 ```
+
+**Wireless debugging (no USB cable):** if `adb devices` shows nothing and you're on Wi-Fi/Tailscale, USB-only setup doesn't apply — pair once via Android's own flow: Settings → Developer options → Wireless debugging → "Pair device with pairing code" gives an IP:port + 6-digit code. Run `adb pair <ip>:<pairing-port> <code>` (the pairing port is different from — and expires faster than — the one shown on the main Wireless debugging screen). Once paired, the device reconnects automatically over mDNS each session; re-pairing is only needed again after a Windows/phone reboot or Wi-Fi network change.
+
+**Metro port:** `npm start` / `npm run android` are pinned to **8090** (`package.json` scripts) instead of Expo's default 8081, because Docker Desktop's backend process squats `8080–8085` on this machine — `expo`'s non-interactive CLI can't prompt for a fallback port and just silently skips starting the dev server (`Skipping dev server`) if 8081 is taken. If 8090 is ever occupied too, check `netstat -ano | grep LISTENING` before picking a replacement, and update it in one place — `frontend/package.json`'s `scripts`.
 
 **Open React Native dev menu (to trigger Reload):**
 ```bash
@@ -276,22 +309,21 @@ After changing icons, run `npx expo prebuild --platform android` to regenerate m
 - `isModelDownloaded(languageCode)`, `downloadModel(languageCode, requireWifi)`, `deleteModel(languageCode)` — language-pack lifecycle, driven from the "Языковые пакеты" screen (`LanguagePacksScreen` in `App.js`, reached from the menu drawer).
 - `translate(text, sourceLanguageCode, targetLanguageCode)` — assumes both models are already downloaded; it does **not** silently auto-download mid-translation (ML Kit's default would), since that would bypass the pack screen's Wi-Fi-only preference and use mobile data without asking.
 
-Language codes are plain ISO strings (`'ru'`, `'ko'`) — these already match the `sourceBubble` values used everywhere else in `App.js`, so no separate mapping table is needed; `TranslateLanguage.fromLanguageTag()` on the native side resolves them.
+Language codes are plain ISO strings. The Korean side is always `'ko'`; the other side is whichever `sourceLang` is currently selected (see "Source language selector" above) — `TranslateLanguage.fromLanguageTag()` on the native side resolves each one, and rejects with `ERR_MLKIT_TRANSLATE` for the handful ML Kit doesn't support (Uzbek/Kazakh/Kyrgyz/Mongolian, as of this SDK version).
 
 **Fallback trigger:** two paths, both funnelling into the shared `applyOfflineFallback(text, sourceBubble)` helper. (1) If `isOnlineRef.current` is already `false` (NetInfo), `doTranslate` skips the `/translate` fetch entirely and goes straight to `offlineTranslate()` — this is what keeps a known-offline translation to roughly the ML Kit call's own latency instead of making the user wait out the 15s backend timeout. (2) If NetInfo *thinks* there's a connection but the fetch still fails or times out (its own 15s `AbortController`), the `catch` block falls back the same way — hybrid mode, exactly as this section used to describe as a roadmap item. Either way, if the on-device models aren't downloaded, the bubble shows a message pointing at the pack screen instead of failing silently.
 
-**What's different offline:** no scenario context (ML Kit has no prompt concept — it's a direct phrase-to-phrase model, not an LLM), and history entries get `offline: true` so `HistoryScreen` can show a small "офлайн ·" tag next to the timestamp.
+**What's different offline:** no scenario context (ML Kit has no prompt concept — it's a direct phrase-to-phrase model, not an LLM), and history entries get `offline: true` so `HistoryScreen` can show a small "offline ·" tag (translated via `tr('offlineTag')`) next to the timestamp.
 
 **Module scaffolding gotcha:** `npx create-expo-module --local` downloads the *current* `expo-module-template` from npm, which targets a newer Expo Modules Gradle convention (`plugins { id 'expo-module-gradle-plugin' }`) than what SDK 52's `expo-modules-core` (2.2.3, already vendored in this project) actually understands. Fresh local modules need their generated `android/build.gradle` rewritten to the older pattern every other module in `node_modules/expo-*/android/build.gradle` already uses (`apply from: ...ExpoModulesCorePlugin.gradle` + `applyKotlinExpoModulesCorePlugin()` + `useCoreDependencies()` + `useDefaultAndroidSdkVersions()`) — copy from an installed module like `expo-speech`, don't trust the freshly-scaffolded file as-is.
 
 ## Future Roadmap (not yet implemented)
 
-- **Play Store release:** `eas build --platform android --profile production` → upload AAB → Google Play Console
+- **Play Store release (in progress):** `backend/server.js` now reads `process.env.PORT` (Railway-ready), `frontend/app.json` has `android.versionCode`, `frontend/eas.json` exists (`production` profile, `app-bundle`, `autoIncrement: versionCode`), and a draft `PRIVACY.md` exists at the repo root (needs hosting at a public URL — e.g. GitHub Pages — before it can go into Play Console's Data Safety form). Recommended build path is a **local** `./gradlew bundleRelease` (this project's toolchain is already fully set up locally, including the custom `mlkit-translate` native module) rather than EAS cloud build, which needs its own account/keystore-in-the-cloud tradeoffs. Remaining steps are all account/manual: generate a release keystore (`keytool`), Google Play Console account ($25), store listing + content rating + Data Safety form, upload to Internal Testing before Production.
 - **OTA updates:** `eas update --branch production` for JS-only changes (no Play Store submission needed)
-- **Backend to cloud:** deploy `backend/` to Railway (`railway up`) to remove Tailscale dependency — set `BACKEND_URL` to public HTTPS domain
+- **Backend to cloud (in progress):** `backend/server.js`'s `PORT` already reads `process.env.PORT` for Railway compatibility. Remaining steps are account-side: create a Railway project connected to this repo's GitHub remote (`kotspilgrim/translator`), set **Root Directory to `backend`** (monorepo), add the `.env` vars in Railway's dashboard, then update `BACKEND_URL` (`frontend/App.js`) and the "Critical Config" section above to the resulting Railway HTTPS domain.
 - **iOS build:** the app is Android-only so far — `mlkit-translate` is a Kotlin/Android-only Expo module (no iOS implementation), and `app.json`/`eas.json` have no iOS config. Needs an iOS-side translation module (or an iOS-specific offline fallback) before `expo run:ios`/`eas build --platform ios` are viable.
-- **Real email delivery for signup verification codes:** `backend/auth.js`'s `signup`/`resend-code` handlers currently stub the send as `console.log` (see Auth section above) — swap in a provider (Resend/SendGrid/etc.), nothing else in the verification flow changes.
 - **Wire up `scenario_id`/`user_id` on translations:** the columns exist on the `translations` table since migration 001, but `/translate` doesn't require login or populate them yet (see "Explicitly not wired up yet" in the Auth section) — needed before per-user scenario history/analytics is possible.
-- **Additional translation language pairs:** both the backend prompt system (`fromLang`/`toLang` are validated against the literal strings `'русский'`/`'корейский'`) and the offline `mlkit-translate` module (hardcoded `'ru'`/`'ko'` codes) assume exactly one language pair — extending to more languages touches both sides, plus the scenario prompt templates and the UI's fixed RU-bottom/KO-top layout.
-- **Interface localization (i18n):** all UI copy in `frontend/App.js` is hardcoded Russian strings (button labels, alerts, placeholders) — no i18n library or string-table layer exists yet.
-- **Redesign the scenario-unavailable notification:** `openScenarioPicker`'s offline/guest blocks currently use React Native's native `Alert.alert` (system dialog, not themed) — the rest of the app avoids native components in favor of the custom dark/light design system (see Theming section), so this should eventually become a themed in-app card/toast instead.
+- **Beyond 9 source languages / non-Korean target:** the source-bubble side now supports 8 languages plus Korean as the fixed target (see "Source language selector" above) — but the *target* bubble is still hardcoded to Korean everywhere (UI layout, `LANG_RU_NAME`'s corейский assumption, offline module's `'ko'` constant). Making the target side selectable too would need a second `LanguageSheet`, a rethink of the fixed RU-bottom/KO-top physical layout, and dropping the "second bubble is always Korean" assumption baked into `doTranslate`/`offlineTranslate`/the backend prompt templates.
+- **Native-speaker review of uz/kk/ky/mn copy:** both the interface-language strings (`frontend/i18n.js`) and the source-language labels are LLM-translated best-effort, not reviewed by a native speaker of Uzbek, Kazakh, Kyrgyz, or Mongolian.
+- **Per-user daily request counter/limit:** `server.js`'s rate limiter (30 req/min) is global/IP-based, not per-account — there's no cap on how many translations a given signed-in user can make per day. Needs the `user_id` wiring above (translations aren't attributed to a user yet) plus a counter (e.g. a Supabase query or Redis) and a decision on what happens at the limit (hard block vs. offline-only fallback).

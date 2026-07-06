@@ -3,6 +3,7 @@ const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 const crypto  = require('crypto');
 const supabase = require('./supabaseClient');
+const { sendVerificationCode } = require('./email');
 
 const router = express.Router();
 
@@ -60,9 +61,7 @@ router.post('/signup', async (req, res) => {
   const code          = generateCode();
   const expiresAt      = new Date(Date.now() + CODE_TTL_MS).toISOString();
 
-  // TODO: send `code` by email once a provider (Resend/SendGrid/etc.) is
-  // wired in. For now it's only written to the DB + logged here.
-  console.log(`[auth] verification code for ${normalizedEmail}: ${code}`);
+  await sendVerificationCode(normalizedEmail, code);
 
   if (existing) {
     // Unverified signup left mid-flow — resume it rather than dead-ending.
@@ -135,7 +134,7 @@ router.post('/resend-code', async (req, res) => {
   }).eq('id', userId);
   if (updateErr) { console.error('[auth] resend-code update error:', updateErr.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
 
-  console.log(`[auth] verification code for ${user.email}: ${code}`);
+  await sendVerificationCode(user.email, code);
   res.json({ ok: true });
 });
 

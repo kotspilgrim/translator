@@ -11,7 +11,9 @@ const supabase     = require('./supabaseClient');
 const authRouter   = require('./auth');
 
 const app  = express();
-const PORT = 3000;
+// Railway (and most PaaS hosts) inject their own PORT at runtime — the
+// hardcoded fallback keeps `npm start` working unchanged for local dev.
+const PORT = process.env.PORT || 3000;
 
 app.use(helmet());
 app.use(cors({ origin: false }));
@@ -174,7 +176,12 @@ app.get('/health', async (req, res) => {
   }
 });
 
-const ALLOWED_LANGS = ['русский', 'корейский'];
+// Second bubble is always Korean; the first can be any of these (see the
+// frontend's source-language selector, frontend/i18n.js's LANG_RU_NAME).
+const ALLOWED_LANGS = [
+  'русский', 'корейский', 'английский', 'японский', 'китайский',
+  'узбекский', 'казахский', 'киргизский', 'монгольский',
+];
 const MAX_TEXT_LEN  = 1000;
 
 app.post('/translate', async (req, res) => {
