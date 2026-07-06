@@ -17,8 +17,9 @@ A bilingual Russian-Korean voice translator. Two people hold one phone between t
 ```
 backend/          Node.js/Express translation server (OpenAI GPT-4o)
 backend/auth.js           Signup/login/email-verification routes, requireAuth middleware
-backend/supabaseClient.js Shared Supabase client (imported by server.js and auth.js)
-backend/migrations/       Hand-run SQL migrations (Supabase SQL editor — no migration runner)
+backend/scenarios.js      Scenario CRUD (Supabase-backed), exports getSystemPrompt()
+backend/supabaseClient.js Shared Supabase client (imported by server.js, auth.js, scenarios.js)
+supabase/migrations/      SQL migrations, Supabase CLI format — auto-applied on push to main (see below)
 frontend/         React Native app (Expo SDK 52 + expo-speech-recognition)
 frontend/modules/mlkit-translate/  Local Expo module: on-device RU/KO translation via Google ML Kit
 ARCHITECTURE.md   C4 diagrams (context, containers, components, deployment)
@@ -90,7 +91,7 @@ npm run android                         # then rebuild
 
 ### Auth (`backend/auth.js`, mounted at `/auth`)
 
-Email + password signup with email-code verification, backed by Supabase Postgres tables created by `backend/migrations/001_users_scenarios_auth.sql` and `002_email_verification_stub.sql` (run by hand in the Supabase SQL editor — this repo has no migration runner). `backend/supabaseClient.js` holds the one shared `supabase` client (`server.js` and `auth.js` both import it, avoiding a circular require). Every `/auth` route 503s up front if Supabase isn't configured — unlike translation logging, auth isn't optional.
+Email + password signup with email-code verification, backed by Supabase Postgres tables created by `supabase/migrations/*_users_scenarios_auth.sql` and `*_email_verification_stub.sql` (see "Database migrations" below for how these get applied). `backend/supabaseClient.js` holds the one shared `supabase` client (`server.js`, `auth.js`, and `scenarios.js` all import it, avoiding circular requires). Every `/auth` route 503s up front if Supabase isn't configured — unlike translation logging, auth isn't optional.
 
 - `POST /auth/signup` `{ email, password, name? }` — validates email format and 4 password rules (≥8 chars, upper+lower case, digit, special char — same rule set `frontend/App.js`'s `checkPasswordRules` mirrors for live UI feedback). Hashes with `bcryptjs`, generates a 6-digit code (10 min TTL, 5 max attempts), sends it via `sendVerificationCode()` (`backend/email.js`, see below) — the code is only ever written to `users.verification_code`, never returned in the API response. Signing up again with an unverified email resumes that row instead of erroring, so an abandoned signup isn't a dead end.
 - `POST /auth/verify-email` `{ userId, code }` → sets `email_verified = true`, clears the code fields, returns `{ token, user }`.
@@ -102,6 +103,16 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 **Explicitly not wired up yet:** `/translate` and history still don't require login or populate `user_id`/`scenario_id` on `translations` — those columns exist since migration 001 but nothing writes them (scenarios themselves are now owner-scoped as of migration 003, see above; translations logging is the remaining piece). That's a deliberate follow-up, not an oversight.
 
 **Email delivery (`backend/email.js`):** `sendVerificationCode(to, code)` always `console.log`s the code first (harmless on a self-hosted box, keeps the old local-dev flow working), then — only if `RESEND_API_KEY` is set — sends via the [Resend](https://resend.com) SDK using `EMAIL_FROM` as the sender. Both env vars are optional: with neither set, behavior is identical to before this existed (console-only). A send failure is logged and swallowed rather than failing the request — the code is already in the DB, and `/auth/resend-code` exists precisely so the user can ask for another attempt. **`EMAIL_FROM` must be on a domain verified in the Resend dashboard** (DNS SPF/DKIM records) — without a verified domain, Resend's sandbox mode only delivers to the email address the Resend account itself signed up with, which won't work for real users.
+
+### Database migrations (`supabase/migrations/`)
+
+Managed via the Supabase CLI (`npx supabase ...`, no global install) and connected to this repo's GitHub integration (Supabase Dashboard → Project Settings → Integrations → GitHub, `kotspilgrim/translator`, working directory = repo root since `supabase/` lives there, not under `backend/`) — **new migrations auto-apply on push to `main`**, no more hand-pasting SQL into the dashboard editor.
+
+- `supabase/config.toml` — CLI project config (`project_id = "translator"`), created by `supabase init`.
+- `supabase/migrations/<timestamp>_<name>.sql` — one file per migration, applied **in filename order**. The first three (`20260101000001_users_scenarios_auth`, `..._email_verification_stub`, `..._scenarios_db_storage`) are the same SQL that used to live in `backend/migrations/` (now removed — that was the hand-run-only version, this is the canonical one). Their timestamps are placeholders (they'd already been run by hand against the live DB before the CLI was adopted, so real apply dates don't matter) — `supabase migration repair --status applied <version> --linked` was used once to mark them as already-applied in the remote history table without re-running their SQL.
+- **To add a new migration:** `npx supabase migration new <name>` (creates a correctly-timestamped empty file in `supabase/migrations/`), write the SQL, commit and push to `main` — the GitHub integration applies it to the live DB automatically. No more manual Supabase SQL editor step.
+- **To check migration status:** `npx supabase link --project-ref hnoubdyasgxdpplahpxu --yes` (one-time per machine/session) then `npx supabase migration list` — shows local vs. remote-applied versions side by side.
+- Requires `npx supabase login` once per machine (opens a browser for OAuth) before `link`/`migration list`/`migration repair` will work — this is a personal CLI credential, not something to script around or store in `.env`.
 
 ### Frontend (`frontend/App.js`)
 
