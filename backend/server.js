@@ -109,6 +109,9 @@ app.post('/translate', async (req, res) => {
 
   const systemPrompt   = await scenariosRouter.getSystemPrompt(context, fromLang, toLang);
   const contextHistory = sanitizeHistory(history);
+  if (history !== undefined) {
+    console.log(`[translate] context turns received=${Array.isArray(history) ? history.length : 'n/a'} used=${contextHistory.length}`);
+  }
 
   const messages = [{ role: 'system', content: systemPrompt }];
   if (contextHistory.length) {
@@ -117,7 +120,7 @@ app.post('/translate', async (req, res) => {
       .join('\n');
     messages.push({
       role: 'system',
-      content: `Недавние реплики этого же разговора (для восстановления опущенных подлежащих/местоимений и подразумеваемых субъектов — не переводи их повторно, они только для контекста):\n${transcript}`,
+      content: `Недавние реплики этого же разговора — используй их, чтобы понять, к кому/чему относятся подлежащие, дополнения и местоимения, опущенные в новой реплике (в корейском это обычная норма), и корректно выбрать род/число/явную отсылку в переводе там, где целевой язык не допускает такого опущения (например, род глагола прошедшего времени в русском). Не переводи и не пересказывай сами эти реплики — они только справочный контекст для новой:\n${transcript}`,
     });
   }
   messages.push({ role: 'user', content: text });
