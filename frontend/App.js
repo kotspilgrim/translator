@@ -968,6 +968,10 @@ export default function App() {
 
   // ── Auth ────────────────────────────────────────────────────────────────────
   const [authUser,     setAuthUser]     = useState(null);
+  // JWT itself never needs to trigger a re-render (authUser already does that
+  // for anything UI-visible) — a ref is enough, read by the /scenarios fetch
+  // handlers below so scenario creation/edit/delete can send it.
+  const authTokenRef = useRef(null);
   const [pendingVerify, setPendingVerify] = useState(null); // { userId, email }
   // Guests skip login entirely and get straight to on-device translation —
   // no scenario context, since that requires an account (see openScenarioPicker).
@@ -1008,6 +1012,7 @@ export default function App() {
         clearTimeout(tid);
         if (resp.ok) {
           const data = await resp.json();
+          authTokenRef.current = token;
           setAuthUser(data.user);
           setScreen('main');
         } else {
@@ -1017,12 +1022,14 @@ export default function App() {
       } catch {
         // Can't confirm the token without the backend — assume it's still
         // good rather than force a re-login just because we're offline.
+        authTokenRef.current = token;
         setScreen('main');
       }
     })();
   }, []);
 
   const handleAuthSuccess = async (token, user) => {
+    authTokenRef.current = token;
     setAuthUser(user);
     setPendingVerify(null);
     try { await AsyncStorage.setItem(AUTH_TOKEN_KEY, token); } catch {}
@@ -1031,6 +1038,7 @@ export default function App() {
 
   const handleLogout = async () => {
     setShowMenu(false);
+    authTokenRef.current = null;
     setAuthUser(null);
     try { await AsyncStorage.removeItem(AUTH_TOKEN_KEY); } catch {}
     setScreen('signin');
@@ -1180,9 +1188,15 @@ export default function App() {
   };
 
   // ── Scenarios: fetch from backend ───────────────────────────────────────────
+  // /scenarios now requires a Bearer token for anything beyond the built-in
+  // list (backend/scenarios.js is Supabase-backed, scoped by owner_id) — sent
+  // whenever we have one, omitted for guests/logged-out (backend then only
+  // returns built-ins, which is exactly what those callers should see).
+  const authHeader = () => authTokenRef.current ? { Authorization: `Bearer ${authTokenRef.current}` } : {};
+
   const fetchScenarios = async () => {
     try {
-      const resp = await fetch(`${BACKEND_URL}/scenarios`);
+      const resp = await fetch(`${BACKEND_URL}/scenarios`, { headers: authHeader() });
       const data = await resp.json();
       if (Array.isArray(data) && data.length) {
         setScenarios(data);
@@ -1239,7 +1253,7 @@ export default function App() {
     try {
       const resp = await fetch(`${BACKEND_URL}/scenarios`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeader() },
         body: JSON.stringify({ name, prompt }),
       });
       const data = await resp.json();
@@ -1264,7 +1278,7 @@ export default function App() {
     setSheetView('edit');
     setEditLoading(true);
     try {
-      const resp = await fetch(`${BACKEND_URL}/scenarios/${s.id}`);
+      const resp = await fetch(`${BACKEND_URL}/scenarios/${s.id}`, { headers: authHeader() });
       const data = await resp.json();
       if (resp.ok) setEditPrompt(data.prompt || '');
       else setEditError(data.error || tr('loadPromptFailedDefault'));
@@ -1282,7 +1296,7 @@ export default function App() {
     try {
       const resp = await fetch(`${BACKEND_URL}/scenarios/${editingScenario.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeader() },
         body: JSON.stringify({ prompt }),
       });
       const data = await resp.json();
@@ -1302,7 +1316,7 @@ export default function App() {
     if (!deleteTarget) return;
     const { id } = deleteTarget;
     try {
-      const resp = await fetch(`${BACKEND_URL}/scenarios/${id}`, { method: 'DELETE' });
+      const resp = await fetch(`${BACKEND_URL}/scenarios/${id}`, { method: 'DELETE', headers: authHeader() });
       if (resp.ok || resp.status === 204) {
         const updated = await fetchScenarios();
         setPinnedIds(prev => {

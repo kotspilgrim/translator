@@ -155,10 +155,12 @@ const S = {
   phRuWait: { ru: 'Ожидайте ответ собеседника', en: 'Wait for the other person\'s reply', ko: '상대방의 응답을 기다려 주세요', ja: '相手の返信をお待ちください', zh: '请等待对方回复', uz: 'Suhbatdoshning javobini kuting', kk: 'Сұхбаттасушының жауабын күтіңіз', ky: 'Маектешиңиздин жообун күтүңүз', mn: 'Ярилцагчийн хариуг хүлээнэ үү' },
 };
 
-// Display names for the built-in (seeded) scenarios, keyed by backend
-// scenarios.json id. Custom user-created scenarios have no entry here —
-// scenarioName() falls back to the raw name backend/server.js stores, since
-// free-text names typed by the user can't be auto-translated.
+// Display names for the built-in (seeded) scenarios, keyed by the stable
+// `slug` backend/scenarios.js attaches to built-in rows (see migration
+// 003_scenarios_db_storage.sql) — NOT the Supabase `id`, which is a uuid and
+// isn't stable across a seed re-run. Custom user-created scenarios have no
+// slug (and no entry here) — scenarioName() falls back to the raw name,
+// since free-text names typed by the user can't be auto-translated.
 const SCENARIO_NAMES = {
   'stranger-on-street': { ru: 'Незнакомец на улице', en: 'Stranger on the street', ko: '길거리의 낯선 사람', ja: '道で出会う見知らぬ人', zh: '街上的陌生人', uz: "Ko'chadagi notanish odam", kk: 'Көшедегі бейтаныс адам', ky: 'Көчөдөгү бейтааныш адам', mn: 'Гудамжны танихгүй хүн' },
   'v-magazine':        { ru: 'В магазине', en: 'At the store', ko: '상점에서', ja: '店で', zh: '在商店', uz: "Do'konda", kk: 'Дүкенде', ky: 'Дүкөндө', mn: 'Дэлгүүрт' },
@@ -170,12 +172,12 @@ const SCENARIO_NAMES = {
   'v-vetklinike':      { ru: 'В ветеринарной клинике', en: 'At the vet clinic', ko: '동물병원에서', ja: '動物病院で', zh: '在兽医诊所', uz: 'Veterinariya klinikasida', kk: 'Ветеринариялық клиникада', ky: 'Ветеринардык клиникада', mn: 'Мал эмнэлэгт' },
 };
 
-// scenario is { id, name } (or a fuller object with builtIn/etc — only id/name
-// are read). Falls back to the raw stored name for custom scenarios or any
-// id not in SCENARIO_NAMES.
+// scenario is { id, name, slug? } — slug is only present for built-ins.
+// Falls back to the raw stored name for custom scenarios or any slug/id not
+// in SCENARIO_NAMES.
 export function scenarioName(lang, scenario) {
   if (!scenario) return '';
-  const names = SCENARIO_NAMES[scenario.id];
+  const names = SCENARIO_NAMES[scenario.slug || scenario.id];
   return (names && (names[lang] || names.ru)) || scenario.name;
 }
 

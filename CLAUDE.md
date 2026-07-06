@@ -66,21 +66,27 @@ npm run android                         # then rebuild
 `POST /translate` accepts `{ text, fromLang, toLang, context }` where `context` is a **scenario id** (not a display name).
 
 - **Language validation:** `fromLang` and `toLang` must each be one of `ALLOWED_LANGS` — Russian words, not language codes: `русский`, `корейский`, `английский`, `японский`, `китайский`, `узбекский`, `казахский`, `киргизский`, `монгольский`. The second bubble is always Korean; the first can be any of the others (see "Source language selector" below) — the backend doesn't itself enforce that pairing, it just validates both values are known words.
-- **Prompt loading:** resolves `context` against the scenario registry (see below), reads `backend/prompts/<file>`, substitutes `{fromLang}` and `{toLang}` placeholders. If the id isn't registered, `context` is used verbatim as free-text context (backward-compat fallback).
+- **Prompt loading:** `await scenariosRouter.getSystemPrompt(context, fromLang, toLang)` (exported off `backend/scenarios.js`, see below) resolves `context` against the `scenarios` Supabase table, substitutes `{fromLang}` and `{toLang}` placeholders. If the id isn't a registered scenario, `context` is used verbatim as free-text context (backward-compat fallback).
 - **Security:** helmet, CORS (`origin: false`), rate limit (30 req/min, also applied to `/scenarios` and `/health`), max text 1000 chars
 - **Supabase logging:** if `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` are in `.env`, each translation is fire-and-forget inserted into the `translations` table
 - **Returns:** `{ translation }` or `{ error }` with appropriate HTTP status
 
-**Scenario registry (`backend/scenarios.json`):** array of `{ id, name, file, builtIn }`. The backend is the source of truth — the frontend fetches this list on launch instead of storing it in AsyncStorage.
+**Scenarios (`backend/scenarios.js`, mounted at `/scenarios`):** fully Supabase-backed as of migration `003_scenarios_db_storage.sql` — no file fallback, 503s up front if Supabase isn't configured (same hard-require pattern as `auth.js`). `backend/scenarios.json` and reading `backend/prompts/*.txt` at runtime are both gone; the `.txt` files are kept in the repo purely as human-readable reference/backup of the built-in prompt text (whatever's in the `scenarios` table is authoritative — don't edit the `.txt` files expecting it to do anything).
 
-- `GET /scenarios` → `[{ id, name, builtIn }]`
-- `GET /scenarios/:id` → `{ id, name, builtIn, prompt }` — reads the prompt file live off disk
-- `POST /scenarios` `{ name, prompt }` → creates a new `builtIn:false` entry. `id` is generated server-side by transliterating `name` (Cyrillic → Latin slug via the `TRANSLIT` map in `server.js`) and de-duplicated (`-2`, `-3`, ...); never trust a client-supplied id for the filename. Writes `backend/prompts/<id>.txt`.
-- `PUT /scenarios/:id` `{ name?, prompt? }` → edits in place; a `prompt` update overwrites the `.txt` file on disk. Works for built-in scenarios too (their prompts are editable, just not deletable).
-- `DELETE /scenarios/:id` → 403 if `builtIn:true`; otherwise removes the registry entry and its prompt file.
+- Each row: `{ id uuid, owner_id uuid|null, scenario_name, scenario_prompt, built_in, slug }`. `owner_id IS NULL ⟺ built_in` (DB check constraint). `slug` is a stable text key (`stranger-on-street`, etc.) set only on the 8 built-ins — `frontend/i18n.js`'s `SCENARIO_NAMES`/`scenarioName()` key off `slug` (falling back to `id`) instead of `id` directly, since `id` is a uuid and isn't stable across a reseed.
+- `optionalAuth(req)` (local helper in `scenarios.js`, not exported) — decodes a `Bearer` JWT if present but never rejects; used by the two `GET` routes so listing/reading works for guests (built-ins only) without requiring login, while a logged-in user's own scenarios are additionally included.
+- `GET /scenarios` → `[{ id, name, builtIn, slug }]` — built-ins always, plus the requester's own (`owner_id` match) if a valid token was sent.
+- `GET /scenarios/:id` → `{ id, name, builtIn, slug, prompt }`, 404 if it's a custom scenario that isn't the requester's own (prevents probing other users' scenarios by guessing a uuid).
+- `POST /scenarios` `{ name, prompt }` → **requires `requireAuth`** (imported from `auth.js`, exported for exactly this). Creates `owner_id: req.userId, built_in: false, slug: null`. This isn't a new restriction in practice — `openScenarioPicker` (frontend) already blocked guests from ever reaching scenario creation client-side; this just makes the server actually enforce it, which matters now that a custom scenario needs a real `owner_id` to satisfy the DB constraint.
+- `PUT /scenarios/:id` `{ name?, prompt? }` → `requireAuth`; allowed if `built_in` (shared, any logged-in user can edit — unchanged from before) or `owner_id === req.userId`; else 403.
+- `DELETE /scenarios/:id` → `requireAuth`; 403 if `built_in`; 403 if not the owner (this **is** a tightening — before this migration there was no ownership concept at all, so any user could delete anyone's custom scenario).
 - `GET /health` → cheap connectivity check via `openai.models.retrieve('gpt-4o')` (no chat-completion cost). `{ ok: true }` or `{ ok: false, error }`.
 
-**Windows/Git Bash gotcha:** inline `curl -d '{"name":"На рынке"}'` mangles Cyrillic through the Windows console codepage before it reaches Node — this looks like a server bug (garbled name, wrong slug) but isn't. Write the JSON body to a UTF-8 file and use `curl --data-binary @file` when testing manually.
+**Frontend must send the JWT to `/scenarios` now:** `frontend/App.js` has `authTokenRef` (set on login success and on a successful boot `/auth/me` check, cleared on logout) and a local `authHeader()` helper (`{ Authorization: 'Bearer ...' }` or `{}` if no token) threaded into `fetchScenarios`/`handleCreateScenario`/`openEdit`/`handleSaveEdit`/`handleDeleteScenario`. Without it, every create/edit/delete 401s — there's no file fallback to silently succeed against anymore.
+
+**Migrating existing local data:** pre-migration `pinnedIds` (AsyncStorage) and history entries' `scenarioId` reference the old string slugs — these won't match the new uuids and will silently stop resolving (pins need re-pinning once; old history entries may show a blank/fallback scenario chip). Acceptable one-time cost for a 2-user personal app; not worked around in code.
+
+**Windows/Git Bash gotcha:** inline `curl -d '{"name":"На рынке"}'` mangles Cyrillic through the Windows console codepage before it reaches Node — this looks like a server bug (garbled name) but isn't. Write the JSON body to a UTF-8 file and use `curl --data-binary @file` when testing manually.
 
 ### Auth (`backend/auth.js`, mounted at `/auth`)
 
@@ -93,7 +99,7 @@ Email + password signup with email-code verification, backed by Supabase Postgre
 - `GET /auth/me` — `requireAuth` middleware (reads `Authorization: Bearer <jwt>`) → current user; used by the frontend on boot to confirm a stored token is still valid. `auth.js` exports `requireAuth` for future routes that need to gate on login.
 - JWT signed with `JWT_SECRET` (`.env`), 30-day expiry. `authLimiter` in `server.js` (10 req/min) is stricter than the 30/min translate limiter — brute-forcing a password or a 6-digit code is a different threat profile.
 
-**Explicitly not wired up yet:** `/translate`, `/scenarios`, and history don't require login or filter by `user_id`/`scenario_id` — the columns exist on `translations` (migration 001) but nothing populates them. That's a deliberate follow-up, not an oversight; see the plan history in this repo's conversation log if you need the reasoning.
+**Explicitly not wired up yet:** `/translate` and history still don't require login or populate `user_id`/`scenario_id` on `translations` — those columns exist since migration 001 but nothing writes them (scenarios themselves are now owner-scoped as of migration 003, see above; translations logging is the remaining piece). That's a deliberate follow-up, not an oversight.
 
 **Email delivery (`backend/email.js`):** `sendVerificationCode(to, code)` always `console.log`s the code first (harmless on a self-hosted box, keeps the old local-dev flow working), then — only if `RESEND_API_KEY` is set — sends via the [Resend](https://resend.com) SDK using `EMAIL_FROM` as the sender. Both env vars are optional: with neither set, behavior is identical to before this existed (console-only). A send failure is logged and swallowed rather than failing the request — the code is already in the DB, and `/auth/resend-code` exists precisely so the user can ask for another attempt. **`EMAIL_FROM` must be on a domain verified in the Resend dashboard** (DNS SPF/DKIM records) — without a verified domain, Resend's sandbox mode only delivers to the email address the Resend account itself signed up with, which won't work for real users.
 
