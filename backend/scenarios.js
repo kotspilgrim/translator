@@ -10,6 +10,7 @@ const openai  = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MAX_NAME_LEN   = 60;
 const MAX_PROMPT_LEN = 4000;
 const MAX_PINNED     = 3;
+const MAX_GENERATE_PER_DAY = 3;
 
 // Scenarios have no file-based fallback anymore — same hard-require pattern
 // auth.js uses for the same reason (both are fully Supabase-backed now).
@@ -60,11 +61,36 @@ router.get('/:id', async (req, res) => {
   res.json({ ...toApi(entry), prompt: entry.scenario_prompt });
 });
 
+// Daily quota (migration 20260707072236) — lives on the user's row so it
+// survives cancelling the create-scenario sheet and app restarts, unlike the
+// scenario itself, which doesn't have an id yet at this point to key a
+// per-scenario counter on. Date is a plain UTC "YYYY-MM-DD" string; simple
+// and fine for a personal 2-user app rather than per-user local midnight.
+async function getGenerateStatus(userId) {
+  const { data: user, error } = await supabase
+    .from('users').select('prompt_generate_count, prompt_generate_date').eq('id', userId).maybeSingle();
+  if (error) throw error;
+  const today = new Date().toISOString().slice(0, 10);
+  const count = (user && user.prompt_generate_date === today) ? user.prompt_generate_count : 0;
+  return { count, today };
+}
+
+// Lets the create-scenario sheet show the remaining count (and disable the
+// button) as soon as it opens, without needing a failed attempt first.
+router.get('/generate-prompt/status', requireAuth, async (req, res) => {
+  try {
+    const { count } = await getGenerateStatus(req.userId);
+    res.json({ remaining: Math.max(0, MAX_GENERATE_PER_DAY - count) });
+  } catch (error) {
+    console.error('[scenarios] generate-status error:', error.message);
+    res.status(500).json({ error: 'Ошибка базы данных' });
+  }
+});
+
 // Generates a scenario_prompt from just a name, for the "Сгенерировать"
 // button in the create-scenario sheet — uses the same 4-line template as the
 // built-in scenarios (see NO_SCENARIO_PROMPT below for the no-scenario
-// variant). Per-scenario generation-count limiting (max 3) lives client-side
-// (the scenario doesn't have an id yet at this point — it isn't created).
+// variant).
 router.post('/generate-prompt', requireAuth, async (req, res) => {
   const { name } = req.body;
   if (typeof name !== 'string' || !name.trim()) {
@@ -72,6 +98,17 @@ router.post('/generate-prompt', requireAuth, async (req, res) => {
   }
   if (name.length > MAX_NAME_LEN) {
     return res.status(400).json({ error: `Название слишком длинное (до ${MAX_NAME_LEN} симв.)` });
+  }
+
+  let status;
+  try {
+    status = await getGenerateStatus(req.userId);
+  } catch (error) {
+    console.error('[scenarios] generate-prompt status error:', error.message);
+    return res.status(500).json({ error: 'Ошибка базы данных' });
+  }
+  if (status.count >= MAX_GENERATE_PER_DAY) {
+    return res.status(429).json({ error: 'limit_reached', remaining: 0 });
   }
 
   try {
@@ -98,10 +135,21 @@ router.post('/generate-prompt', requireAuth, async (req, res) => {
     });
 
     const raw = completion.choices[0]?.message?.content?.trim() || '';
+
+    // Counts against the daily quota once the request has actually reached
+    // OpenAI (a real attempt/cost) — regardless of whether it came back as a
+    // usable prompt or a NO_LOGIC rejection.
+    const newCount = status.count + 1;
+    const { error: updateErr } = await supabase.from('users').update({
+      prompt_generate_count: newCount, prompt_generate_date: status.today,
+    }).eq('id', req.userId);
+    if (updateErr) console.error('[scenarios] generate-count update error:', updateErr.message);
+    const remaining = Math.max(0, MAX_GENERATE_PER_DAY - newCount);
+
     if (!raw || raw === 'NO_LOGIC' || raw.startsWith('NO_LOGIC')) {
-      return res.status(422).json({ error: 'no_logic' });
+      return res.status(422).json({ error: 'no_logic', remaining });
     }
-    res.json({ prompt: raw });
+    res.json({ prompt: raw, remaining });
   } catch (error) {
     console.error('[scenarios] generate-prompt error:', error.message);
     res.status(500).json({ error: 'Не удалось сгенерировать промпт' });

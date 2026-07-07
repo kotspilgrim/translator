@@ -44,7 +44,6 @@ const SOURCE_LANG_KEY    = 'translator_source_lang';
 const HISTORY_TTL   = 24 * 60 * 60 * 1000;
 const SILENCE_MS    = 7000;
 const MAX_PINNED    = 3;
-const MAX_GENERATE  = 3; // scenario-prompt generations allowed per create session
 // A conversation only counts as the SAME context while consecutive turns are
 // less than 2h apart — an idle gap of 2h+ means whatever was said before it
 // is treated as a different conversation and dropped from the model's
@@ -105,6 +104,10 @@ const COLORS = {
     iconMid: '#cfcfcf', iconDim: '#666',
 
     scrimLight: 'rgba(0,0,0,0.6)',
+    // Darker/more opaque than scrimLight specifically for the menu drawer —
+    // at scrimLight's alpha the varied colors behind it (bubbles, buttons,
+    // root bg) blend through unevenly instead of reading as one flat tint.
+    menuScrimBg: 'rgba(0,0,0,0.72)',
 
     micBg: '#202020', micBorder: '#2e2e2e', micIcon: '#e6e6e6',
     micRecBg: '#7f1d1d', micRecBorder: '#ef4444', micRecIcon: '#e6e6e6',
@@ -174,6 +177,7 @@ const COLORS = {
     iconMid: '#555', iconDim: '#999',
 
     scrimLight: 'rgba(0,0,0,0.3)',
+    menuScrimBg: 'rgba(0,0,0,0.55)',
 
     micBg: '#ffffff', micBorder: '#e2e2e8', micIcon: '#333',
     micRecBg: '#fdecec', micRecBorder: '#ef4444', micRecIcon: '#dc2626',
@@ -1442,10 +1446,10 @@ export default function App() {
   const [createSaving,  setCreateSaving]  = useState(false);
   const [createError,   setCreateError]   = useState('');
   const [generating,    setGenerating]    = useState(false);
-  // Per-creation-session cap — the scenario has no id yet at this point (it
-  // isn't saved), so this can't be tracked server-side; resets in closePicker
-  // like the other create-form fields.
-  const [generateCount, setGenerateCount] = useState(0);
+  // Server-side daily quota (backend/scenarios.js — survives Cancel and app
+  // restarts, unlike the rest of the create-form state below), fetched fresh
+  // whenever the create view opens. null = not fetched yet.
+  const [generateRemaining, setGenerateRemaining] = useState(null);
 
   const [editingScenario, setEditingScenario] = useState(null); // { id, name }
   const [editPrompt,      setEditPrompt]      = useState('');
@@ -1629,14 +1633,34 @@ export default function App() {
   const closePicker = () => {
     setShowPicker(false);
     setSheetView('list');
-    setCreateName(''); setCreatePrompt(''); setCreateError(''); setGenerateCount(0);
+    setCreateName(''); setCreatePrompt(''); setCreateError('');
     setEditingScenario(null); setEditPrompt(''); setEditError('');
+  };
+
+  // Refetches the daily quota every time the create view opens — Cancel (unlike
+  // closePicker) deliberately does NOT touch this, since the whole point is
+  // that it's a server-side quota, not a per-session one.
+  useEffect(() => {
+    if (sheetView !== 'create') return;
+    (async () => {
+      try {
+        const resp = await fetch(`${BACKEND_URL}/scenarios/generate-prompt/status`, { headers: authHeader() });
+        if (resp.ok) setGenerateRemaining((await resp.json()).remaining);
+      } catch {}
+    })();
+  }, [sheetView]);
+
+  // Clears only the create-form fields — NOT generateRemaining, which is the
+  // server-side daily quota and must persist across Cancel.
+  const handleCancelCreate = () => {
+    setCreateName(''); setCreatePrompt(''); setCreateError('');
+    setSheetView('list');
   };
 
   const handleGeneratePrompt = async () => {
     const name = createName.trim();
     if (!name) { setCreateError(tr('generateNameRequired')); return; }
-    if (generateCount >= MAX_GENERATE) return;
+    if (generateRemaining === 0) return;
     setGenerating(true);
     setCreateError('');
     try {
@@ -1646,14 +1670,13 @@ export default function App() {
         body: JSON.stringify({ name }),
       });
       const data = await resp.json();
-      // Only counts against the limit once a request has actually reached
-      // OpenAI (a real attempt/cost) — a client-side network failure below
-      // never got that far, so it doesn't consume one of the 3 tries.
-      setGenerateCount(n => n + 1);
+      if (typeof data.remaining === 'number') setGenerateRemaining(data.remaining);
       if (resp.ok) {
         setCreatePrompt(data.prompt);
       } else if (data.error === 'no_logic') {
         setCreateError(tr('generateNoLogic'));
+      } else if (data.error === 'limit_reached') {
+        setCreateError(tr('generateLimitReached'));
       } else {
         setCreateError(data.error || tr('generateFailedDefault'));
       }
@@ -2526,7 +2549,7 @@ export default function App() {
             {sheetView === 'create' && (
               <>
                 <View style={S.subHead}>
-                  <TouchableOpacity onPress={() => setSheetView('list')} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                  <TouchableOpacity onPress={handleCancelCreate} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                     <MI name="arrow-back" size={22} color={c.backIcon} />
                   </TouchableOpacity>
                   <Text style={S.subHeadTitle}>{tr('newScenario')}</Text>
@@ -2545,36 +2568,36 @@ export default function App() {
                     placeholderTextColor={c.fieldPh}
                   />
 
-                  <View style={S.fieldLblRow}>
-                    <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
+                  <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
+                  <View style={S.fieldTextareaWrap}>
+                    <TextInput
+                      style={[S.fieldTextarea, S.fieldTextareaWithBtn]}
+                      value={createPrompt}
+                      onChangeText={setCreatePrompt}
+                      placeholder={tr('promptPlaceholder')}
+                      placeholderTextColor={c.fieldPh}
+                      multiline
+                      textAlignVertical="top"
+                    />
                     <TouchableOpacity
-                      style={[S.generateBtn, generateCount >= MAX_GENERATE && S.generateBtnDisabled]}
+                      style={[S.generateBtn, generateRemaining === 0 && S.generateBtnDisabled]}
                       onPress={handleGeneratePrompt}
-                      disabled={generating || generateCount >= MAX_GENERATE}
+                      disabled={generating || generateRemaining === 0}
                     >
                       {generating
                         ? <ActivityIndicator color={c.linkColor} size="small" />
-                        : <MI name="auto-awesome" size={14} color={generateCount >= MAX_GENERATE ? c.iconDim : c.linkColor} />}
-                      <Text style={[S.generateBtnTxt, generateCount >= MAX_GENERATE && S.generateBtnTxtDisabled]}>
-                        {tr('generateBtn')}{generateCount > 0 ? ` (${generateCount}/${MAX_GENERATE})` : ''}
+                        : <MI name="auto-awesome" size={14} color={generateRemaining === 0 ? c.iconDim : c.linkColor} />}
+                      <Text style={[S.generateBtnTxt, generateRemaining === 0 && S.generateBtnTxtDisabled]}>
+                        {tr('generateBtn')}{generateRemaining !== null ? ` (${generateRemaining})` : ''}
                       </Text>
                     </TouchableOpacity>
                   </View>
-                  <TextInput
-                    style={S.fieldTextarea}
-                    value={createPrompt}
-                    onChangeText={setCreatePrompt}
-                    placeholder={tr('promptPlaceholder')}
-                    placeholderTextColor={c.fieldPh}
-                    multiline
-                    textAlignVertical="top"
-                  />
 
                   {!!createError && <Text style={S.fieldError}>{createError}</Text>}
                 </ScrollView>
 
                 <View style={S.formActions}>
-                  <TouchableOpacity style={S.btnNeutral} onPress={() => setSheetView('list')} disabled={createSaving}>
+                  <TouchableOpacity style={S.btnNeutral} onPress={handleCancelCreate} disabled={createSaving}>
                     <Text style={S.btnNeutralTxt}>{tr('cancel')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={S.btnSave} onPress={handleCreateScenario} disabled={createSaving}>
@@ -2675,7 +2698,7 @@ function makeStyles(c, theme) {
   },
   menuScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: c.scrimLight, zIndex: 90, elevation: 20,
+    backgroundColor: c.menuScrimBg, zIndex: 90, elevation: 20,
   },
   menuDrawer: {
     width: '74%', height: '100%', backgroundColor: c.menuDrawerBg,
@@ -2916,15 +2939,6 @@ function makeStyles(c, theme) {
     fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8,
     color: c.fieldLbl, marginBottom: 6, marginTop: 4,
   },
-  fieldLblRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  generateBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12,
-    backgroundColor: c.chipInsetBg, borderWidth: 1, borderColor: c.authFieldBorder,
-  },
-  generateBtnDisabled: { opacity: 0.5 },
-  generateBtnTxt:         { color: c.linkColor, fontSize: 11.5, fontWeight: '600' },
-  generateBtnTxtDisabled: { color: c.iconDim },
   fieldInput: {
     backgroundColor: c.fieldBg, borderWidth: 1, borderColor: c.fieldBorder, borderRadius: 10,
     color: c.fieldNameText, fontSize: 15, paddingHorizontal: 13, paddingVertical: 11,
@@ -2933,6 +2947,20 @@ function makeStyles(c, theme) {
     backgroundColor: c.fieldBg, borderWidth: 1, borderColor: c.fieldBorder, borderRadius: 10,
     color: c.fieldPromptText, fontSize: 13.5, lineHeight: 20, padding: 12, minHeight: 130,
   },
+  // Generate button lives inside the prompt bubble itself (top-right corner)
+  // rather than as a separate row above it — fieldTextareaWithBtn reserves
+  // vertical space up top so typed text never runs under it.
+  fieldTextareaWrap: { position: 'relative' },
+  fieldTextareaWithBtn: { paddingTop: 42 },
+  generateBtn: {
+    position: 'absolute', top: 8, right: 8,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12,
+    backgroundColor: c.chipInsetBg, borderWidth: 1, borderColor: c.authFieldBorder,
+  },
+  generateBtnDisabled: { opacity: 0.5 },
+  generateBtnTxt:         { color: c.linkColor, fontSize: 11.5, fontWeight: '600' },
+  generateBtnTxtDisabled: { color: c.iconDim },
   fieldError: { color: c.fieldError, fontSize: 12, marginTop: 8 },
   formActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
   btnNeutral: {
