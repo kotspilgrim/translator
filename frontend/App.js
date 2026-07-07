@@ -6,6 +6,7 @@ import {
   BackHandler, ToastAndroid,
 } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
+import { LinearGradient } from 'expo-linear-gradient';
 
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 import { StatusBar } from 'expo-status-bar';
@@ -42,7 +43,8 @@ const AUTH_TOKEN_KEY = 'translator_auth_token';
 const INTERFACE_LANG_KEY = 'translator_interface_lang';
 const SOURCE_LANG_KEY    = 'translator_source_lang';
 const HISTORY_TTL   = 24 * 60 * 60 * 1000;
-const SILENCE_MS    = 7000;
+const INITIAL_SILENCE_MS = 15000; // waiting for speech to start at all, after the mic opens
+const PAUSE_SILENCE_MS   = 10000; // waiting for the next phrase, once some speech has already come in
 const MAX_PINNED    = 3;
 // A conversation only counts as the SAME context while consecutive turns are
 // less than 2h apart — an idle gap of 2h+ means whatever was said before it
@@ -187,7 +189,7 @@ const COLORS = {
     testOk: '#16a34a', testBad: '#dc2626', testChecking: '#2563eb',
     pillBg: '#ffffff', pillBorder: '#e2e2e8', pillText: '#666',
 
-    bubbleBg: '#ffffff', bubbleBorder: '#e5e5ea', bubbleBorderActive: '#111111',
+    bubbleBg: '#ffffff', bubbleBorder: '#e5e5ea', bubbleBorderActive: '#5383F5',
     textStrong: '#111111', textPlaceholder: '#c2c2c8', textWaitPlaceholder: '#9a9aa2',
     bubbleInputPh: '#bbb', chipInsetBg: '#ececf0', ttsDimOpacity: 0.35,
 
@@ -1218,11 +1220,19 @@ export default function App() {
     }
   }, [showMenu]);
 
-  // ── Hardware/gesture back: close the menu if open, otherwise require a
-  // second press within 2s to actually exit (Android convention) ────────────
+  // ── Hardware/gesture back: on 'history'/'packs' (menu-reached sub-screens,
+  // no navigation stack) return to 'main'; on 'main' itself, close the menu
+  // if open, otherwise require a second press within 2s to exit (Android
+  // convention). Auth screens (signin/signup/verify/...) keep no override —
+  // default Android behavior applies there. ─────────────────────────────────
   const exitArmedRef = useRef(false);
   const exitTimerRef = useRef(null);
   useEffect(() => {
+    if (screen === 'history' || screen === 'packs') {
+      const onBackPress = () => { setScreen('main'); return true; };
+      const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => sub.remove();
+    }
     if (screen !== 'main') return;
     const onBackPress = () => {
       if (showMenu) { setShowMenu(false); return true; }
@@ -1497,6 +1507,36 @@ export default function App() {
   const [koText,      setKoText]      = useState('');
   const [recognizing, setRecognizing] = useState(false);
   const [translating, setTranslating] = useState(false);
+  // Mirror ruText/koText for the keyboardDidHide listener below (registered
+  // once on mount), which would otherwise close over stale, empty text.
+  const ruTextRef = useRef('');
+  const koTextRef = useRef('');
+  useEffect(() => { ruTextRef.current = ruText; }, [ruText]);
+  useEffect(() => { koTextRef.current = koText; }, [koText]);
+
+  // "Edge Lighting" — a long, soft gradient arc that sweeps continuously
+  // around the active bubble's border ring while its mic is recording,
+  // echoing Samsung's edge-light effect. A single oversized LinearGradient
+  // (see bubbleEdge* below), one-sided (transparent → accent, ramping over
+  // most of its own length so the visible arc is long), spins behind a thin
+  // ring window.
+  const ruGlowAnim = useRef(new Animated.Value(0)).current;
+  const koGlowAnim = useRef(new Animated.Value(0)).current;
+  const startGlowLoop = anim => Animated.loop(
+    Animated.timing(anim, { toValue: 1, duration: 2600, easing: Easing.linear, useNativeDriver: true }),
+  );
+  useEffect(() => {
+    if (!(recognizing && activeBubble === 'ru')) { ruGlowAnim.setValue(0); return; }
+    const loop = startGlowLoop(ruGlowAnim);
+    loop.start();
+    return () => loop.stop();
+  }, [recognizing, activeBubble === 'ru']);
+  useEffect(() => {
+    if (!(recognizing && activeBubble === 'ko')) { koGlowAnim.setValue(0); return; }
+    const loop = startGlowLoop(koGlowAnim);
+    loop.start();
+    return () => loop.stop();
+  }, [recognizing, activeBubble === 'ko']);
 
   // 'ru' → TextInput inside Russian bubble
   // 'ko' → overlay panel at physical top of screen (keyboard-from-top effect)
@@ -1510,7 +1550,33 @@ export default function App() {
   const justClosedRef   = useRef(false);
   const justClosedTimer = useRef(null);
 
-  const silenceTimer = useRef(null);
+  // ── Speech session bookkeeping ──────────────────────────────────────────────
+  // Android's own SpeechRecognizer gives up listening for speech (or for the
+  // next phrase after a pause) after a short internal timeout of its own —
+  // typically just a few seconds, well short of the 15s/10s this app wants
+  // to allow. Rather than fight that, each native session is treated as one
+  // disposable "segment": when it ends early on its own, we silently start a
+  // fresh segment and keep going, as long as we're still within our own
+  // deadline below — the user never sees the mic drop.
+  const stopRequestedRef = useRef(false);      // true only for a real, intentional stop (user pressed the mic button)
+  const waitDeadlineRef  = useRef(0);          // Date.now()-based instant to actually give up by
+  const hasSpeechRef     = useRef(false);      // any speech heard yet this turn? decides which budget (15s/10s) extends the deadline
+  const accumulatedTextRef   = useRef('');     // text committed from earlier segments in this turn
+  const lastRecognizedTextRef = useRef('');    // full combined text (accumulated + current segment) — read by 'end' to translate
+  const lastErrorCodeRef = useRef(null);       // most recent 'error' event's code, consumed by the next 'end'
+  // Error codes that mean the session is genuinely over (permission/hardware/
+  // network problems, or a deliberate abort) — never worth silently retrying.
+  const HARD_STOP_ERRORS = useRef(new Set([
+    'not-allowed', 'audio-capture', 'network', 'service-not-allowed',
+    'bad-grammar', 'language-not-supported', 'busy', 'client', 'aborted', 'unknown',
+  ])).current;
+  const startRecognitionSegment = bubble => {
+    ExpoSpeechRecognitionModule.start({
+      lang: bubble === 'ru' ? LANG_LOCALE[sourceLangRef.current] : 'ko-KR',
+      interimResults: true,
+      continuous: false,
+    });
+  };
 
   // ── Connection test (manual, menu-triggered) ────────────────────────────────
   // The main screen no longer has a tappable test button/result pill (see
@@ -1817,39 +1883,58 @@ export default function App() {
 
   useEffect(() => () => { Speech.stop(); }, []);
 
-  // ── Silence timer ──────────────────────────────────────────────────────────
-  const kickSilenceTimer = () => {
-    clearTimeout(silenceTimer.current);
-    silenceTimer.current = setTimeout(() => ExpoSpeechRecognitionModule.stop(), SILENCE_MS);
-  };
-  const killSilenceTimer = () => {
-    clearTimeout(silenceTimer.current);
-    silenceTimer.current = null;
-  };
-
   // ── Speech events ──────────────────────────────────────────────────────────
-  useSpeechRecognitionEvent('start', () => { setRecognizing(true); kickSilenceTimer(); });
-  useSpeechRecognitionEvent('end',   () => { setRecognizing(false); killSilenceTimer(); });
+  // 'start' only flips UI state — turn-level bookkeeping (deadline, accumulated
+  // text, etc.) is set up once in handleMic before the first segment starts,
+  // and deliberately left untouched across the silent segment restarts below.
+  useSpeechRecognitionEvent('start', () => { setRecognizing(true); });
+
+  useSpeechRecognitionEvent('error', event => { lastErrorCodeRef.current = event.error; });
 
   useSpeechRecognitionEvent('result', event => {
-    const text   = event.results[0]?.transcript || '';
+    const segmentText = event.results[0]?.transcript || '';
     const bubble = activeBubbleRef.current;
-    if (bubble === 'ru') setRuText(text);
-    else                 setKoText(text);
-
-    if (!event.isFinal) {
-      kickSilenceTimer();
-    } else {
-      killSilenceTimer();
-      if (text) {
-        const fromLang = bubble === 'ru' ? LANG_RU_NAME[sourceLangRef.current] : 'корейский';
-        const toLang   = bubble === 'ru' ? 'корейский' : LANG_RU_NAME[sourceLangRef.current];
-        doTranslate(text, fromLang, toLang, bubble);
-      }
+    const combined = (accumulatedTextRef.current + ' ' + segmentText).trim();
+    if (bubble === 'ru') setRuText(combined);
+    else                 setKoText(combined);
+    lastRecognizedTextRef.current = combined;
+    if (segmentText.trim()) {
+      hasSpeechRef.current = true;
+      waitDeadlineRef.current = Date.now() + PAUSE_SILENCE_MS;
     }
+    // No explicit stop() on isFinal — with continuous:false the recognizer
+    // ends the segment on its own shortly after; 'end' below decides whether
+    // that means "done" or "silently start the next segment".
   });
 
-  useSpeechRecognitionEvent('error', () => { setRecognizing(false); killSilenceTimer(); });
+  useSpeechRecognitionEvent('end', () => {
+    const errorCode = lastErrorCodeRef.current;
+    lastErrorCodeRef.current = null;
+    const wasUserStop = stopRequestedRef.current;
+    stopRequestedRef.current = false;
+
+    const keepWaiting = !wasUserStop && !HARD_STOP_ERRORS.has(errorCode) && Date.now() < waitDeadlineRef.current;
+    if (keepWaiting) {
+      // Native gave up on this segment before our own budget did (its own
+      // silence detection is much shorter than 15s/10s) — commit what this
+      // segment heard and quietly keep listening. `recognizing` stays true
+      // throughout, so nothing flickers in the UI.
+      accumulatedTextRef.current = lastRecognizedTextRef.current;
+      setTimeout(() => startRecognitionSegment(activeBubbleRef.current), 250);
+      return;
+    }
+
+    setRecognizing(false);
+    // Translate right as the mic turns off for real, whatever was heard
+    // across all of this turn's segments.
+    const bubble = activeBubbleRef.current;
+    const text = lastRecognizedTextRef.current.trim();
+    if (bubble && text) {
+      const fromLang = bubble === 'ru' ? LANG_RU_NAME[sourceLangRef.current] : 'корейский';
+      const toLang   = bubble === 'ru' ? 'корейский' : LANG_RU_NAME[sourceLangRef.current];
+      doTranslate(text, fromLang, toLang, bubble);
+    }
+  });
 
   // ── Translation ────────────────────────────────────────────────────────────
   // Offline fallback: ML Kit translates directly between the bubble sides.
@@ -1974,7 +2059,7 @@ export default function App() {
     if (translating) return;
     if (typingBubble) { Keyboard.dismiss(); setTypingBubble(null); }
 
-    if (recognizing) { ExpoSpeechRecognitionModule.stop(); return; }
+    if (recognizing) { stopRequestedRef.current = true; ExpoSpeechRecognitionModule.stop(); return; }
 
     setActiveBubble(bubble);
     activeBubbleRef.current = bubble;
@@ -1982,11 +2067,13 @@ export default function App() {
     const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!granted) return;
 
-    ExpoSpeechRecognitionModule.start({
-      lang: bubble === 'ru' ? LANG_LOCALE[sourceLangRef.current] : 'ko-KR',
-      interimResults: true,
-      continuous: false,
-    });
+    stopRequestedRef.current = false;
+    hasSpeechRef.current = false;
+    accumulatedTextRef.current = '';
+    lastRecognizedTextRef.current = '';
+    lastErrorCodeRef.current = null;
+    waitDeadlineRef.current = Date.now() + INITIAL_SILENCE_MS;
+    startRecognitionSegment(bubble);
   };
 
   // ── Typing mode ────────────────────────────────────────────────────────────
@@ -2003,11 +2090,30 @@ export default function App() {
   // 'ru' — the KO bubble/mic rows stay hidden even though the keyboard is
   // gone. Listening for the OS-level hide event closes typing mode
   // regardless of how the keyboard went away.
+  //
+  // If that happened without the user pressing the input's own "Done" (which
+  // already translates immediately via handleRuSubmit/handleKoSubmit —
+  // typingBubbleRef.current is already null by the time keyboardDidHide fires
+  // for that path, so this doesn't double-fire), wait 1s and translate
+  // whatever text is there — unless the keyboard came back up in the
+  // meantime, in which case leave it alone.
+  const keyboardVisibleRef = useRef(false);
   useEffect(() => {
-    const sub = Keyboard.addListener('keyboardDidHide', () => {
-      if (typingBubbleRef.current) closeTypingMode();
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardVisibleRef.current = false;
+      const bubble = typingBubbleRef.current;
+      if (!bubble) return;
+      closeTypingMode();
+      setTimeout(() => {
+        if (keyboardVisibleRef.current) return; // reopened within the 1s window — leave as-is
+        const text = (bubble === 'ru' ? ruTextRef.current : koTextRef.current).trim();
+        if (!text) return;
+        if (bubble === 'ru') doTranslate(text, LANG_RU_NAME[sourceLangRef.current], 'корейский', 'ru');
+        else                 doTranslate(text, 'корейский', LANG_RU_NAME[sourceLangRef.current], 'ko');
+      }, 1000);
     });
-    return () => sub.remove();
+    const showSub = Keyboard.addListener('keyboardDidShow', () => { keyboardVisibleRef.current = true; });
+    return () => { hideSub.remove(); showSub.remove(); };
   }, [closeTypingMode]);
 
   const handleBubbleTap = bubble => {
@@ -2217,6 +2323,25 @@ export default function App() {
             onPress={() => handleBubbleTap('ko')}
             activeOpacity={0.95}
           >
+            {micRecording('ko') && (
+              <View style={S.bubbleEdgeRing} pointerEvents="none">
+                <Animated.View
+                  style={[
+                    S.bubbleEdgeSweep,
+                    { transform: [{ rotate: koGlowAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] }) }] },
+                  ]}
+                >
+                  <LinearGradient
+                    colors={['transparent', 'transparent', c.bubbleBorderActive]}
+                    locations={[0, 0.3, 1]}
+                    start={{ x: 0.5, y: 0 }}
+                    end={{ x: 0.5, y: 1 }}
+                    style={S.bubbleEdgeGradient}
+                  />
+                </Animated.View>
+                <View style={S.bubbleEdgePunch} />
+              </View>
+            )}
             <View style={S.bubbleBody}>
               {translating && activeBubble === 'ru' ? (
                 <ActivityIndicator color={c.testChecking} size="large" />
@@ -2267,6 +2392,25 @@ export default function App() {
           onPress={() => handleBubbleTap('ru')}
           activeOpacity={0.95}
         >
+          {micRecording('ru') && (
+            <View style={S.bubbleEdgeRing} pointerEvents="none">
+              <Animated.View
+                style={[
+                  S.bubbleEdgeSweep,
+                  { transform: [{ rotate: ruGlowAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] }) }] },
+                ]}
+              >
+                <LinearGradient
+                  colors={['transparent', 'transparent', c.bubbleBorderActive]}
+                  locations={[0, 0.3, 1]}
+                  start={{ x: 0.5, y: 0 }}
+                  end={{ x: 0.5, y: 1 }}
+                  style={S.bubbleEdgeGradient}
+                />
+              </Animated.View>
+              <View style={S.bubbleEdgePunch} />
+            </View>
+          )}
           <View style={S.bubbleBody}>
             {translating && activeBubble === 'ko' ? (
               <ActivityIndicator color={c.testChecking} size="large" />
@@ -2764,6 +2908,26 @@ function makeStyles(c, theme) {
     ...shadow(theme, SHADOW_MD),
   },
   bubbleActive: { borderColor: c.bubbleBorderActive },
+  // "Edge Lighting" — bubbleEdgeRing is the clipping window: it sits INSIDE
+  // the bubble's own 2px border (RN lays out absolutely-positioned children
+  // within the padding box), so to stay concentric with the bubble's actual
+  // outer curve its radius must be reduced by that same 2px (20-2=18) —
+  // using the outer radius unchanged left a visible gap/mismatch right at
+  // the corners. bubbleEdgePunch nests inside THAT by another 3px, so its
+  // own radius is reduced again (18-3=15), keeping the visible ring band a
+  // constant 3px wide all the way around, corners included.
+  // bubbleEdgeSweep is a 3x-oversized square (so it fully covers the ring
+  // at any rotation) that spins continuously; the LinearGradient inside it
+  // is one-sided (transparent → accent), with the ramp starting early
+  // (locations 0→0.3) so the visible arc is long, not just a sliver near
+  // the peak. pointerEvents:'none' so none of this intercepts onPress.
+  bubbleEdgeRing: { ...StyleSheet.absoluteFillObject, borderRadius: 18, overflow: 'hidden' },
+  bubbleEdgeSweep: { position: 'absolute', top: '-100%', left: '-100%', width: '300%', height: '300%' },
+  bubbleEdgeGradient: { flex: 1 },
+  bubbleEdgePunch: {
+    position: 'absolute', top: 3, left: 3, right: 3, bottom: 3, borderRadius: 15,
+    backgroundColor: c.bubbleBg,
+  },
   bubbleBody: {
     flex: 1, justifyContent: 'center', alignItems: 'center', padding: 18,
   },

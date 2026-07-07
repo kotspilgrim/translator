@@ -85,6 +85,12 @@ const ALLOWED_LANGS = [
   'узбекский', 'казахский', 'киргизский', 'монгольский',
 ];
 const MAX_TEXT_LEN     = 1000;
+// Appended to the scenario's own system prompt (same message, not a separate
+// one — tested empirically: GPT-4o reliably follows this only when it's part
+// of the single system message alongside the scenario prompt; as a second,
+// separate system-role message it was consistently ignored and fell back to
+// literal, nonsensical word-for-word translation of the idiom).
+const IDIOM_INSTRUCTION = 'Фразеологизмы, идиомы, пословицы и устойчивые выражения НЕЛЬЗЯ переводить дословно — подбирай существующий эквивалент в языке перевода, а если точного эквивалента нет, передай смысл выражения обычными словами. Например, русское "когда рак на горе свистнет" (значение — "никогда") на корейский нужно переводить через смысловой эквивалент вроде "해가 서쪽에서 뜨면" ("когда солнце взойдёт на западе"), а не дословным переводом про рака и гору.';
 // Mirrors the frontend's MAX_CONTEXT_TURNS/session-gap logic (App.js) — the
 // client is trusted to pick the right turns (same-scenario, <2h idle gaps),
 // but length/shape are re-validated here since request bodies aren't trusted
@@ -129,7 +135,9 @@ app.post('/translate', async (req, res) => {
     console.log(`[translate] context turns received=${Array.isArray(history) ? history.length : 'n/a'} used=${contextHistory.length}`);
   }
 
-  const messages = [{ role: 'system', content: systemPrompt }];
+  const messages = [
+    { role: 'system', content: `${systemPrompt}\n\n${IDIOM_INSTRUCTION}` },
+  ];
   if (contextHistory.length) {
     const transcript = contextHistory
       .map((h, i) => `${i + 1}. ${h.original} → ${h.translated}`)
