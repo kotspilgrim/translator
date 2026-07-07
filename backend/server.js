@@ -13,6 +13,11 @@ const app  = express();
 // Railway (and most PaaS hosts) inject their own PORT at runtime — the
 // hardcoded fallback keeps `npm start` working unchanged for local dev.
 const PORT = process.env.PORT || 3000;
+// Railway sits in front of the app as a single reverse-proxy hop, setting
+// X-Forwarded-For on every request. Without this, express-rate-limit can't
+// tell real client IPs apart (everyone looks like the proxy) and logs an
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR warning on every request.
+app.set('trust proxy', 1);
 
 app.use(helmet());
 app.use(cors({ origin: false }));
