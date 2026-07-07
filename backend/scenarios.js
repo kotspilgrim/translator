@@ -7,6 +7,7 @@ const router = express.Router();
 
 const MAX_NAME_LEN   = 60;
 const MAX_PROMPT_LEN = 4000;
+const MAX_PINNED     = 3;
 
 // Scenarios have no file-based fallback anymore — same hard-require pattern
 // auth.js uses for the same reason (both are fully Supabase-backed now).
@@ -34,6 +35,15 @@ router.get('/', async (req, res) => {
   const { data, error } = await query;
   if (error) { console.error('[scenarios] list error:', error.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
   res.json(data.map(toApi));
+});
+
+// Pins are per-user (users_scenarios_mapping, migration 001) — registered
+// before GET /:id so "pinned" is never swallowed as a scenario id.
+router.get('/pinned', requireAuth, async (req, res) => {
+  const { data, error } = await supabase
+    .from('users_scenarios_mapping').select('scenario_id').eq('user_id', req.userId);
+  if (error) { console.error('[scenarios] pinned list error:', error.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+  res.json(data.map(r => r.scenario_id));
 });
 
 router.get('/:id', async (req, res) => {
@@ -103,6 +113,29 @@ router.delete('/:id', requireAuth, async (req, res) => {
 
   const { error } = await supabase.from('scenarios').delete().eq('id', req.params.id);
   if (error) { console.error('[scenarios] delete error:', error.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+  res.status(204).end();
+});
+
+// scenario_id has `on delete cascade` (migration 001) — deleting a scenario
+// (above) automatically drops any mapping rows pinning it, so pins can never
+// go stale pointing at a scenario that no longer exists.
+router.post('/:id/pin', requireAuth, async (req, res) => {
+  const { count, error: countErr } = await supabase
+    .from('users_scenarios_mapping').select('scenario_id', { count: 'exact', head: true }).eq('user_id', req.userId);
+  if (countErr) { console.error('[scenarios] pin count error:', countErr.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+  if (count >= MAX_PINNED) return res.status(400).json({ error: `Можно закрепить не более ${MAX_PINNED}` });
+
+  const { error } = await supabase
+    .from('users_scenarios_mapping')
+    .upsert({ user_id: req.userId, scenario_id: req.params.id }, { onConflict: 'user_id,scenario_id' });
+  if (error) { console.error('[scenarios] pin error:', error.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+  res.status(204).end();
+});
+
+router.delete('/:id/pin', requireAuth, async (req, res) => {
+  const { error } = await supabase
+    .from('users_scenarios_mapping').delete().eq('user_id', req.userId).eq('scenario_id', req.params.id);
+  if (error) { console.error('[scenarios] unpin error:', error.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
   res.status(204).end();
 });
 

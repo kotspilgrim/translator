@@ -36,7 +36,6 @@ import { t, INTERFACE_LANGUAGES, SOURCE_LANGUAGES, LANG_LOCALE, LANG_RU_NAME, sc
 // ── Config ───────────────────────────────────────────────────────────────────
 const BACKEND_URL   = 'https://translator-production-6a87.up.railway.app';
 const HISTORY_KEY   = 'translation_history';
-const PINNED_KEY    = 'translator_pinned_scenarios';
 const THEME_KEY     = 'translator_theme';
 const AUTH_TOKEN_KEY = 'translator_auth_token';
 const INTERFACE_LANG_KEY = 'translator_interface_lang';
@@ -1522,50 +1521,48 @@ export default function App() {
   // scenario the logged-in user owns.
   useEffect(() => { fetchScenarios(); }, [authUser]);
 
-  // ── Pinned scenarios (local, max 3) ─────────────────────────────────────────
-  useEffect(() => {
-    (async () => {
+  // ── Pinned scenarios (server-side, max 3) ───────────────────────────────────
+  // Backed by users_scenarios_mapping via /scenarios/pinned + /scenarios/:id/pin
+  // (backend/scenarios.js) so pins survive a reinstall/new device instead of
+  // living only in this device's AsyncStorage. Pins are per-account, so
+  // guests always see an empty list (fetchPinnedIds no-ops without a token);
+  // re-fetched on the same authUser transitions as fetchScenarios, for the
+  // same boot-race reason documented there.
+  const fetchPinnedIds = async () => {
+    if (!authTokenRef.current) { setPinnedIds([]); return; }
+    try {
+      const resp = await fetch(`${BACKEND_URL}/scenarios/pinned`, { headers: authHeader() });
+      if (resp.ok) setPinnedIds(await resp.json());
+    } catch {}
+  };
+  useEffect(() => { fetchPinnedIds(); }, [authUser]);
+
+  // Optimistic toggle — flips local state immediately, reverts if the
+  // backend call fails. scenario_id has `on delete cascade` on the mapping
+  // table, so a deleted scenario's pin is cleaned up server-side on its own.
+  const togglePin = async id => {
+    if (pinnedIds.includes(id)) {
+      setPinnedIds(prev => prev.filter(x => x !== id));
       try {
-        const raw = await AsyncStorage.getItem(PINNED_KEY);
-        if (raw) setPinnedIds(JSON.parse(raw));
-      } catch {}
-    })();
-  }, []);
-
-  // Prunes pinned ids that no longer match any fetched scenario — e.g. ones
-  // saved before scenario storage moved to Supabase (server.js: file-based
-  // string slugs → scenarios.js: real uuids), or a pinned custom scenario
-  // someone else deleted. Without this, stale entries permanently occupy
-  // MAX_PINNED slots (never displayed, since nothing matches) while blocking
-  // any new pin — `prev.length >= MAX_PINNED` in togglePin doesn't care
-  // whether those ids still resolve to anything real.
-  useEffect(() => {
-    if (!scenarios.length) return;
-    setPinnedIds(prev => {
-      const valid = prev.filter(id => scenarios.some(s => s.id === id));
-      if (valid.length !== prev.length) {
-        AsyncStorage.setItem(PINNED_KEY, JSON.stringify(valid)).catch(() => {});
+        const resp = await fetch(`${BACKEND_URL}/scenarios/${id}/pin`, { method: 'DELETE', headers: authHeader() });
+        if (!resp.ok) setPinnedIds(prev => [...prev, id]);
+      } catch {
+        setPinnedIds(prev => [...prev, id]);
       }
-      return valid;
-    });
-  }, [scenarios]);
-
-  const togglePin = id => {
-    setPinnedIds(prev => {
-      if (prev.includes(id)) {
-        const next = prev.filter(x => x !== id);
-        AsyncStorage.setItem(PINNED_KEY, JSON.stringify(next)).catch(() => {});
-        return next;
-      }
-      if (prev.length >= MAX_PINNED) {
-        setPinToast(true);
-        setTimeout(() => setPinToast(false), 1500);
-        return prev;
-      }
-      const next = [...prev, id];
-      AsyncStorage.setItem(PINNED_KEY, JSON.stringify(next)).catch(() => {});
-      return next;
-    });
+      return;
+    }
+    if (pinnedIds.length >= MAX_PINNED) {
+      setPinToast(true);
+      setTimeout(() => setPinToast(false), 1500);
+      return;
+    }
+    setPinnedIds(prev => [...prev, id]);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/scenarios/${id}/pin`, { method: 'POST', headers: authHeader() });
+      if (!resp.ok) setPinnedIds(prev => prev.filter(x => x !== id));
+    } catch {
+      setPinnedIds(prev => prev.filter(x => x !== id));
+    }
   };
 
   // ── Scenario sheet: create / edit / delete ──────────────────────────────────
@@ -1651,11 +1648,9 @@ export default function App() {
       const resp = await fetch(`${BACKEND_URL}/scenarios/${id}`, { method: 'DELETE', headers: authHeader() });
       if (resp.ok || resp.status === 204) {
         const updated = await fetchScenarios();
-        setPinnedIds(prev => {
-          const next = prev.filter(x => x !== id);
-          AsyncStorage.setItem(PINNED_KEY, JSON.stringify(next)).catch(() => {});
-          return next;
-        });
+        // Server-side cascade already drops the mapping row for the deleted
+        // scenario (see backend/scenarios.js) — just mirror it locally.
+        setPinnedIds(prev => prev.filter(x => x !== id));
         if (scenarioIdRef.current === id && updated?.length) setScenarioId(updated[0].id);
       }
     } catch {}
@@ -2416,6 +2411,7 @@ export default function App() {
                   style={[S.sheetItem, scenarioId === null && S.sheetItemOn]}
                   onPress={() => { setScenarioId(null); closePicker(); }}
                 >
+                  <View style={S.pinIconBtn} />
                   <View style={S.sheetItemLabel}>
                     <Text style={[S.sheetItemTxt, scenarioId === null && S.sheetItemTxtOn]}>{tr('noScenarioTab')}</Text>
                   </View>
