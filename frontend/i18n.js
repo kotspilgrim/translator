@@ -83,6 +83,19 @@ const S = {
   resendIn: { ru: 'Отправить повторно через', en: 'Resend in', ko: '재전송까지', ja: '再送信まで', zh: '重新发送倒计时', uz: 'Qayta yuborish', kk: 'Қайта жіберу', ky: 'Кайра жөнөтүү', mn: 'Дахин илгээх' },
   resendCode: { ru: 'Отправить код повторно', en: 'Resend code', ko: '코드 재전송', ja: 'コードを再送信', zh: '重新发送验证码', uz: 'Kodni qayta yuborish', kk: 'Кодты қайта жіберу', ky: 'Кодду кайра жөнөтүү', mn: 'Кодыг дахин илгээх' },
 
+  // Auth: forgot / reset password
+  resetPasswordTitle: { ru: 'Восстановление пароля', en: 'Password reset', ko: '비밀번호 재설정', ja: 'パスワードの再設定', zh: '重置密码', uz: 'Parolni tiklash', kk: 'Құпия сөзді қалпына келтіру', ky: 'Сыр сөздү калыбына келтирүү', mn: 'Нууц үг сэргээх' },
+  resetPasswordSubtitle: { ru: 'Введите email, привязанный к аккаунту, — мы отправим код для сброса пароля.', en: 'Enter the email linked to your account — we\'ll send a code to reset your password.', ko: '계정에 연결된 이메일을 입력하세요 — 비밀번호 재설정 코드를 보내드립니다.', ja: 'アカウントに登録されたメールアドレスを入力してください。パスワード再設定用のコードをお送りします。', zh: '请输入与账号关联的邮箱——我们会发送重置密码的验证码。', uz: 'Hisobingizga bog\'langan email\'ni kiriting — parolni tiklash uchun kod yuboramiz.', kk: 'Аккаунтқа байланысты email енгізіңіз — құпия сөзді қалпына келтіру үшін код жібереміз.', ky: 'Аккаунтка байланыштуу email киргизиңиз — сыр сөздү калыбына келтирүү үчүн код жөнөтөбүз.', mn: 'Бүртгэлтэй холбоотой и-мэйл хаягаа оруулна уу — нууц үг сэргээх код илгээнэ.' },
+  sendCodeBtn: { ru: 'Отправить код', en: 'Send code', ko: '코드 보내기', ja: 'コードを送信', zh: '发送验证码', uz: 'Kodni yuborish', kk: 'Кодты жіберу', ky: 'Кодду жөнөтүү', mn: 'Код илгээх' },
+  resetRequestFailedDefault: { ru: 'Не удалось отправить код', en: 'Could not send the code', ko: '코드를 보내지 못했습니다', ja: 'コードを送信できませんでした', zh: '发送验证码失败', uz: 'Kodni yuborib bo\'lmadi', kk: 'Кодты жіберу мүмкін болмады', ky: 'Кодду жөнөтүү мүмкүн болбоду', mn: 'Код илгээж чадсангүй' },
+  newPasswordTitle: { ru: 'Новый пароль', en: 'New password', ko: '새 비밀번호', ja: '新しいパスワード', zh: '新密码', uz: 'Yangi parol', kk: 'Жаңа құпия сөз', ky: 'Жаңы сыр сөз', mn: 'Шинэ нууц үг' },
+  newPasswordSubtitle: { ru: 'Придумайте новый пароль для входа в аккаунт', en: 'Create a new password for your account', ko: '계정에 사용할 새 비밀번호를 만드세요', ja: 'アカウント用の新しいパスワードを作成してください', zh: '为您的账号设置新密码', uz: 'Hisobingiz uchun yangi parol yarating', kk: 'Аккаунтыңыз үшін жаңа құпия сөз жасаңыз', ky: 'Аккаунтуңуз үчүн жаңы сыр сөз түзүңүз', mn: 'Бүртгэлдээ шинэ нууц үг үүсгэнэ үү' },
+  confirmPasswordLabel: { ru: 'Повторите пароль', en: 'Confirm password', ko: '비밀번호 확인', ja: 'パスワード（確認）', zh: '确认密码', uz: 'Parolni takrorlang', kk: 'Құпия сөзді қайталаңыз', ky: 'Сыр сөздү кайталаңыз', mn: 'Нууц үгээ давтана уу' },
+  passwordsMismatch: { ru: 'Пароли не совпадают', en: 'Passwords don\'t match', ko: '비밀번호가 일치하지 않습니다', ja: 'パスワードが一致しません', zh: '两次密码不一致', uz: 'Parollar mos kelmadi', kk: 'Құпия сөздер сәйкес келмейді', ky: 'Сыр сөздөр дал келбейт', mn: 'Нууц үг таарахгүй байна' },
+  savePasswordBtn: { ru: 'Сохранить пароль', en: 'Save password', ko: '비밀번호 저장', ja: 'パスワードを保存', zh: '保存密码', uz: 'Parolni saqlash', kk: 'Құпия сөзді сақтау', ky: 'Сыр сөздү сактоо', mn: 'Нууц үг хадгалах' },
+  resetPasswordFailedDefault: { ru: 'Не удалось изменить пароль', en: 'Could not change the password', ko: '비밀번호를 변경하지 못했습니다', ja: 'パスワードを変更できませんでした', zh: '修改密码失败', uz: 'Parolni o\'zgartirib bo\'lmadi', kk: 'Құпия сөзді өзгерту мүмкін болмады', ky: 'Сыр сөздү өзгөртүү мүмкүн болбоду', mn: 'Нууц үгийг өөрчилж чадсангүй' },
+  passwordChangedNotice: { ru: 'Пароль изменён. Войдите с новым паролем.', en: 'Password changed. Sign in with your new password.', ko: '비밀번호가 변경되었습니다. 새 비밀번호로 로그인하세요.', ja: 'パスワードが変更されました。新しいパスワードでサインインしてください。', zh: '密码已修改。请使用新密码登录。', uz: 'Parol o\'zgartirildi. Yangi parol bilan kiring.', kk: 'Құпия сөз өзгертілді. Жаңа құпия сөзбен кіріңіз.', ky: 'Сыр сөз өзгөртүлдү. Жаңы сыр сөз менен кириңиз.', mn: 'Нууц үг өөрчлөгдлөө. Шинэ нууц үгээрээ нэвтэрнэ үү.' },
+
   // History
   historyTitle: { ru: 'История', en: 'History', ko: '기록', ja: '履歴', zh: '历史记录', uz: 'Tarix', kk: 'Тарих', ky: 'Тарых', mn: 'Түүх' },
   scenarioFallback: { ru: 'Сценарий', en: 'Scenario', ko: '시나리오', ja: 'シナリオ', zh: '场景', uz: 'Ssenariy', kk: 'Сценарий', ky: 'Сценарий', mn: 'Хувилбар' },
@@ -101,7 +114,7 @@ const S = {
   wifiOnly: { ru: 'Скачивать только по Wi-Fi', en: 'Download over Wi-Fi only', ko: 'Wi-Fi로만 다운로드', ja: 'Wi-Fiでのみダウンロード', zh: '仅通过Wi-Fi下载', uz: 'Faqat Wi-Fi orqali yuklab olish', kk: 'Тек Wi-Fi арқылы жүктеу', ky: 'Жалгыз Wi-Fi аркылуу жүктөө', mn: 'Зөвхөн Wi-Fi-аар татах' },
 
   // Main screen chrome
-  appBrand: { ru: 'RU ⇄ KO Переводчик', en: 'RU ⇄ KO Translator', ko: 'RU ⇄ KO 번역기', ja: 'RU⇄KO 翻訳機', zh: 'RU⇄KO 翻译器', uz: 'RU ⇄ KO Tarjimon', kk: 'RU ⇄ KO Аудармашы', ky: 'RU ⇄ KO Котормочу', mn: 'RU ⇄ KO Орчуулагч' },
+  appBrand: { ru: 'One to 한', en: 'One to 한', ko: 'One to 한', ja: 'One to 한', zh: 'One to 한', uz: 'One to 한', kk: 'One to 한', ky: 'One to 한', mn: 'One to 한' },
   guestLabel: { ru: 'Гость', en: 'Guest', ko: '게스트', ja: 'ゲスト', zh: '访客', uz: 'Mehmon', kk: 'Қонақ', ky: 'Конок', mn: 'Зочин' },
   noScenarioGuest: { ru: 'Без сценария (гость)', en: 'No scenario (guest)', ko: '시나리오 없음 (게스트)', ja: 'シナリオなし（ゲスト）', zh: '无场景（访客）', uz: 'Ssenariysiz (mehmon)', kk: 'Сценариясыз (қонақ)', ky: 'Сценариссиз (конок)', mn: 'Хувилбаргүй (зочин)' },
   menuScenarios: { ru: 'Сценарии', en: 'Scenarios', ko: '시나리오', ja: 'シナリオ', zh: '场景', uz: 'Ssenariylar', kk: 'Сценарийлер', ky: 'Сценарийлер', mn: 'Хувилбарууд' },

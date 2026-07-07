@@ -448,17 +448,6 @@ function LanguagePacksScreen({ theme, onBack, lang, sourceLang }) {
 }
 
 // ── Auth: shared bits ────────────────────────────────────────────────────────
-// The app icon (dark navy "가" over near-white "Я") is a fixed brand mark,
-// not a themed surface — same two colors in both themes.
-function AuthLogo({ S }) {
-  return (
-    <View style={S.authLogoBox}>
-      <View style={S.authLogoTop}><Text style={S.authLogoTopTxt}>가</Text></View>
-      <View style={S.authLogoBottom}><Text style={S.authLogoBottomTxt}>Я</Text></View>
-    </View>
-  );
-}
-
 function AuthThemeToggle({ theme, toggleTheme, c, S }) {
   return (
     <TouchableOpacity style={S.authThemeToggle} onPress={toggleTheme} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
@@ -467,11 +456,41 @@ function AuthThemeToggle({ theme, toggleTheme, c, S }) {
   );
 }
 
+// Interface-language switch for the pre-login screens — shares the same
+// INTERFACE_LANGUAGES/LanguageSheet as the logged-in menu drawer's picker, and
+// writes to the same lifted `interfaceLang` state in App(), so a change here
+// instantly applies everywhere else too (forgot-password, verify-code, etc.
+// all read that same state via their own `lang` prop).
+function AuthLangToggle({ lang, onChangeLang, c, S }) {
+  const [show, setShow] = useState(false);
+  return (
+    <>
+      <TouchableOpacity style={S.authLangBtn} onPress={() => setShow(true)} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+        <Text style={S.authLangBtnTxt}>{lang.toUpperCase()}</Text>
+      </TouchableOpacity>
+      <LanguageSheet
+        visible={show}
+        onClose={() => setShow(false)}
+        options={INTERFACE_LANGUAGES}
+        selected={lang}
+        onSelect={onChangeLang}
+        title={t(lang, 'menuInterfaceLanguage')}
+        c={c} S={S}
+      />
+    </>
+  );
+}
+
 // ── Sign in ──────────────────────────────────────────────────────────────────
-function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGoToSignUp, onGuest, lang }) {
+function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGoToSignUp, onGuest, onForgotPassword, notice, onConsumeNotice, lang, onChangeLang }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
   const tr = (key, vars) => t(lang, key, vars);
+
+  // Consumed once on mount so a stale success banner can't reappear the next
+  // time this screen is shown (e.g. after a later logout).
+  const [localNotice] = useState(notice || '');
+  useEffect(() => { if (notice) onConsumeNotice(); }, []);
 
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
@@ -506,13 +525,22 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
   return (
     <View style={S.authScreen}>
       <StatusBar style={c.statusBarStyle} />
-      <AuthThemeToggle theme={theme} toggleTheme={toggleTheme} c={c} S={S} />
+      <View style={S.authTopRightRow}>
+        <AuthLangToggle lang={lang} onChangeLang={onChangeLang} c={c} S={S} />
+        <AuthThemeToggle theme={theme} toggleTheme={toggleTheme} c={c} S={S} />
+      </View>
 
       <View style={S.authLogoWrap}>
-        <AuthLogo S={S} />
         <Text style={S.authTitle}>{tr('welcomeBack')}</Text>
         <Text style={S.authSubtitle}>{tr('signInSubtitle')}</Text>
       </View>
+
+      {!!localNotice && (
+        <View style={S.authNoticeRow}>
+          <MI name="check-circle" size={14} color={c.btnSaveText} />
+          <Text style={S.authNoticeTxt}>{localNotice}</Text>
+        </View>
+      )}
 
       <Text style={S.authFieldLbl}>{tr('emailLabel')}</Text>
       <View style={S.authFieldBox}>
@@ -549,8 +577,9 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
         </View>
       )}
 
-      {/* No reset flow yet — plain label, not a dead-end tap target */}
-      <Text style={[S.authLink, S.authLinkEnd]}>{tr('forgotPassword')}</Text>
+      <TouchableOpacity onPress={onForgotPassword} style={S.authLinkEnd} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+        <Text style={S.authLink}>{tr('forgotPassword')}</Text>
+      </TouchableOpacity>
 
       <TouchableOpacity
         style={[S.authPrimaryBtn, loading && S.authPrimaryBtnDisabled]}
@@ -578,7 +607,7 @@ function SignInScreen({ theme, toggleTheme, onSuccess, onNeedsVerification, onGo
 }
 
 // ── Sign up ──────────────────────────────────────────────────────────────────
-function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn, lang }) {
+function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn, lang, onChangeLang }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
   const tr = (key, vars) => t(lang, key, vars);
@@ -638,7 +667,8 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn, l
           <MI name="arrow-back" size={24} color={c.backIcon} />
         </TouchableOpacity>
         <Text style={S.authHeaderTitle}>{tr('createAccount')}</Text>
-        <View style={{ marginLeft: 'auto' }}>
+        <View style={S.authHeaderRightRow}>
+          <AuthLangToggle lang={lang} onChangeLang={onChangeLang} c={c} S={S} />
           <AuthThemeToggle theme={theme} toggleTheme={toggleTheme} c={c} S={S} />
         </View>
       </View>
@@ -727,7 +757,7 @@ function SignUpScreen({ theme, toggleTheme, onNeedsVerification, onGoToSignIn, l
 const CODE_LENGTH   = 6;
 const RESEND_COOLDOWN_S = 60;
 
-function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack, lang }) {
+function VerifyCodeScreen({ theme, userId, email, verifyEndpoint = '/auth/verify-email', resendEndpoint = '/auth/resend-code', onSuccess, onBack, lang }) {
   const c = COLORS[theme];
   const S = useMemo(() => makeStyles(c, theme), [c, theme]);
   const tr = (key, vars) => t(lang, key, vars);
@@ -749,14 +779,14 @@ function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack, lang }) {
     setLoading(true);
     setError('');
     try {
-      const resp = await fetch(`${BACKEND_URL}/auth/verify-email`, {
+      const resp = await fetch(`${BACKEND_URL}${verifyEndpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, code: fullCode }),
       });
       const data = await resp.json();
       if (resp.ok) {
-        onSuccess(data.token, data.user);
+        onSuccess(data);
       } else {
         setError(data.error || tr('invalidCodeDefault'));
         if (typeof data.attemptsRemaining === 'number') setAttemptsLeft(data.attemptsRemaining);
@@ -779,7 +809,7 @@ function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack, lang }) {
     setError('');
     setCode('');
     try {
-      const resp = await fetch(`${BACKEND_URL}/auth/resend-code`, {
+      const resp = await fetch(`${BACKEND_URL}${resendEndpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId }),
@@ -857,6 +887,249 @@ function VerifyCodeScreen({ theme, userId, email, onSuccess, onBack, lang }) {
   );
 }
 
+// ── Forgot password: email entry ────────────────────────────────────────────
+function ForgotPasswordScreen({ theme, toggleTheme, onCodeSent, onNeedsVerification, onBack, lang }) {
+  const c = COLORS[theme];
+  const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+  const tr = (key, vars) => t(lang, key, vars);
+
+  const [email,   setEmail]   = useState('');
+  const [touched, setTouched] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+
+  const emailValid = EMAIL_RE.test(email.trim());
+  const canSubmit   = emailValid && !loading;
+
+  const handleSubmit = async () => {
+    setTouched(true);
+    if (!canSubmit) return;
+    setError('');
+    setLoading(true);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        onCodeSent(data.userId, email.trim());
+      } else if (data.error === 'email_not_verified') {
+        // This email never finished signup verification — there's no
+        // password to reset yet, route into the existing signup-verify flow.
+        onNeedsVerification(data.userId, email.trim());
+      } else {
+        setError(data.error || tr('resetRequestFailedDefault'));
+      }
+    } catch {
+      setError(tr('noServerConnection'));
+    }
+    setLoading(false);
+  };
+
+  return (
+    <View style={S.authScreen}>
+      <StatusBar style={c.statusBarStyle} />
+      <View style={S.authHeaderRow}>
+        <TouchableOpacity onPress={onBack} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <MI name="arrow-back" size={24} color={c.backIcon} />
+        </TouchableOpacity>
+        <Text style={S.authHeaderTitle}>{tr('resetPasswordTitle')}</Text>
+        <View style={{ marginLeft: 'auto' }}>
+          <AuthThemeToggle theme={theme} toggleTheme={toggleTheme} c={c} S={S} />
+        </View>
+      </View>
+
+      <View style={S.codeHintIcon}>
+        <MI name="lock-reset" size={28} color={c.linkColor} />
+      </View>
+      <Text style={[S.authSubtitle, { textAlign: 'left', marginBottom: 28 }]}>{tr('resetPasswordSubtitle')}</Text>
+
+      <Text style={S.authFieldLbl}>{tr('emailLabel')}</Text>
+      <View style={[S.authFieldBox, touched && !emailValid && S.authFieldBoxError]}>
+        <TextInput
+          style={S.authFieldInput}
+          value={email}
+          onChangeText={setEmail}
+          placeholder="anna@example.com"
+          placeholderTextColor={c.fieldPh}
+          autoCapitalize="none"
+          keyboardType="email-address"
+          autoFocus
+        />
+      </View>
+      {touched && !emailValid && (
+        <View style={S.authErrorRow}>
+          <MI name="error" size={14} color={c.fieldError} />
+          <Text style={S.authErrorTxt}>{tr('invalidEmail')}</Text>
+        </View>
+      )}
+
+      {!!error && (
+        <View style={S.authErrorRow}>
+          <MI name="error" size={14} color={c.fieldError} />
+          <Text style={S.authErrorTxt}>{error}</Text>
+        </View>
+      )}
+
+      <TouchableOpacity
+        style={[S.authPrimaryBtn, !canSubmit && S.authPrimaryBtnDisabled]}
+        onPress={handleSubmit}
+        disabled={loading}
+      >
+        {loading
+          ? <ActivityIndicator color={c.authPrimaryText} />
+          : <Text style={[S.authPrimaryBtnTxt, !canSubmit && S.authPrimaryBtnTxtDisabled]}>{tr('sendCodeBtn')}</Text>}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// ── Reset password: new password entry (after the code is verified) ────────
+function ResetPasswordScreen({ theme, toggleTheme, resetToken, onSuccess, onBack, lang }) {
+  const c = COLORS[theme];
+  const S = useMemo(() => makeStyles(c, theme), [c, theme]);
+  const tr = (key, vars) => t(lang, key, vars);
+
+  const [password,        setPassword]        = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword,    setShowPassword]    = useState(false);
+  const [touched,         setTouched]         = useState(false);
+  const [loading,         setLoading]         = useState(false);
+  const [error,           setError]           = useState('');
+
+  const rules  = checkPasswordRules(password);
+  const passed = passwordRulesPassed(rules);
+  const tierColor = passed <= 1 ? c.fieldError : passed <= 3 ? c.warnColor : c.btnSaveText;
+  const tierLabel = passed <= 1 ? tr('weakPassword') : passed <= 3 ? tr('mediumPassword') : tr('strongPassword');
+  const passwordsMatch = password.length > 0 && password === confirmPassword;
+  const canSubmit = passed === 4 && passwordsMatch && !loading;
+
+  const requirements = [
+    { key: 'minLength',  labelKey: 'reqMinLength' },
+    { key: 'upperLower', labelKey: 'reqUpperLower' },
+    { key: 'digit',      labelKey: 'reqDigit' },
+    { key: 'special',    labelKey: 'reqSpecial' },
+  ];
+
+  const handleSubmit = async () => {
+    setTouched(true);
+    if (!canSubmit) return;
+    setError('');
+    setLoading(true);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resetToken, password }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        onSuccess();
+      } else {
+        setError(data.error || tr('resetPasswordFailedDefault'));
+      }
+    } catch {
+      setError(tr('noServerConnection'));
+    }
+    setLoading(false);
+  };
+
+  return (
+    <View style={S.authScreen}>
+      <StatusBar style={c.statusBarStyle} />
+      <View style={S.authHeaderRow}>
+        <TouchableOpacity onPress={onBack} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <MI name="arrow-back" size={24} color={c.backIcon} />
+        </TouchableOpacity>
+        <Text style={S.authHeaderTitle}>{tr('newPasswordTitle')}</Text>
+        <View style={{ marginLeft: 'auto' }}>
+          <AuthThemeToggle theme={theme} toggleTheme={toggleTheme} c={c} S={S} />
+        </View>
+      </View>
+
+      <Text style={[S.authSubtitle, { textAlign: 'left', marginBottom: 22 }]}>{tr('newPasswordSubtitle')}</Text>
+
+      <Text style={S.authFieldLbl}>{tr('passwordLabel')}</Text>
+      <View style={[S.authFieldBox, touched && passed < 4 && S.authFieldBoxError]}>
+        <TextInput
+          style={S.authFieldInput}
+          value={password}
+          onChangeText={setPassword}
+          placeholder="••••••••••••"
+          placeholderTextColor={c.fieldPh}
+          secureTextEntry={!showPassword}
+        />
+        <TouchableOpacity onPress={() => setShowPassword(v => !v)} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <MI name={showPassword ? 'visibility' : 'visibility-off'} size={20} color={c.iconDim} />
+        </TouchableOpacity>
+      </View>
+
+      <View style={S.strengthBarsRow}>
+        {[0, 1, 2, 3].map(i => (
+          <View key={i} style={[S.strengthBar, { backgroundColor: i < passed ? tierColor : c.authFieldBorder }]} />
+        ))}
+      </View>
+      {!!password && <Text style={[S.strengthLabel, { color: tierColor }]}>{tierLabel}</Text>}
+
+      <View style={S.reqList}>
+        {requirements.map(r => {
+          const met = rules[r.key];
+          const show = !!password;
+          return (
+            <View key={r.key} style={S.reqRow}>
+              <MI
+                name={show ? (met ? 'check-circle' : 'cancel') : 'check-circle'}
+                size={17}
+                color={show ? (met ? c.btnSaveText : c.fieldError) : c.iconDim}
+              />
+              <Text style={[S.reqTxt, { color: show ? (met ? c.iconDim : c.fieldError) : c.iconDim }]}>
+                {tr(r.labelKey)}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+
+      <Text style={S.authFieldLbl}>{tr('confirmPasswordLabel')}</Text>
+      <View style={[S.authFieldBox, touched && !passwordsMatch && S.authFieldBoxError]}>
+        <TextInput
+          style={S.authFieldInput}
+          value={confirmPassword}
+          onChangeText={setConfirmPassword}
+          placeholder="••••••••••••"
+          placeholderTextColor={c.fieldPh}
+          secureTextEntry={!showPassword}
+        />
+      </View>
+      {touched && !passwordsMatch && (
+        <View style={S.authErrorRow}>
+          <MI name="error" size={14} color={c.fieldError} />
+          <Text style={S.authErrorTxt}>{tr('passwordsMismatch')}</Text>
+        </View>
+      )}
+
+      {!!error && (
+        <View style={S.authErrorRow}>
+          <MI name="error" size={14} color={c.fieldError} />
+          <Text style={S.authErrorTxt}>{error}</Text>
+        </View>
+      )}
+
+      <TouchableOpacity
+        style={[S.authPrimaryBtn, !canSubmit && S.authPrimaryBtnDisabled]}
+        onPress={handleSubmit}
+        disabled={loading}
+      >
+        {loading
+          ? <ActivityIndicator color={c.authPrimaryText} />
+          : <Text style={[S.authPrimaryBtnTxt, !canSubmit && S.authPrimaryBtnTxtDisabled]}>{tr('savePasswordBtn')}</Text>}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 // ── Language picker sheet (shared: interface language + source language) ──
 function LanguageSheet({ visible, onClose, options, selected, onSelect, title, c, S }) {
   return (
@@ -879,7 +1152,7 @@ function LanguageSheet({ visible, onClose, options, selected, onSelect, title, c
                 <View style={S.sheetItemLabel}>
                   <Text style={[S.sheetItemTxt, selected === o.code && S.sheetItemTxtOn]}>{o.label}</Text>
                 </View>
-                {selected === o.code && <MI name="check" size={18} color={c.pinAccent} />}
+                {selected === o.code && <MI name="check" size={18} color={c.pinAccent} style={S.sheetCheckIcon} />}
               </TouchableOpacity>
             ))}
           </ScrollView>
@@ -990,6 +1263,9 @@ export default function App() {
   // handlers below so scenario creation/edit/delete can send it.
   const authTokenRef = useRef(null);
   const [pendingVerify, setPendingVerify] = useState(null); // { userId, email }
+  const [pendingReset, setPendingReset] = useState(null); // { userId, email } — forgot-password flow
+  const [resetToken,   setResetToken]   = useState(null); // short-lived token from verify-reset-code
+  const [authNotice,   setAuthNotice]   = useState(''); // one-shot banner shown on the sign-in screen
   // Guests skip login entirely and get straight to on-device translation —
   // no scenario context, since that requires an account (see openScenarioPicker).
   const [isGuest, setIsGuest] = useState(false);
@@ -1682,7 +1958,11 @@ export default function App() {
         onNeedsVerification={(userId, email) => { setPendingVerify({ userId, email }); setScreen('verify'); }}
         onGoToSignUp={() => setScreen('signup')}
         onGuest={handleContinueAsGuest}
+        onForgotPassword={() => setScreen('forgotPassword')}
+        notice={authNotice}
+        onConsumeNotice={() => setAuthNotice('')}
         lang={interfaceLang}
+        onChangeLang={changeInterfaceLang}
       />
     );
   }
@@ -1695,6 +1975,7 @@ export default function App() {
         onNeedsVerification={(userId, email) => { setPendingVerify({ userId, email }); setScreen('verify'); }}
         onGoToSignIn={() => setScreen('signin')}
         lang={interfaceLang}
+        onChangeLang={changeInterfaceLang}
       />
     );
   }
@@ -1705,8 +1986,54 @@ export default function App() {
         theme={theme}
         userId={pendingVerify.userId}
         email={pendingVerify.email}
-        onSuccess={handleAuthSuccess}
+        onSuccess={data => handleAuthSuccess(data.token, data.user)}
         onBack={() => { setPendingVerify(null); setScreen('signin'); }}
+        lang={interfaceLang}
+      />
+    );
+  }
+
+  if (screen === 'forgotPassword') {
+    return (
+      <ForgotPasswordScreen
+        theme={theme}
+        toggleTheme={toggleTheme}
+        onCodeSent={(userId, email) => { setPendingReset({ userId, email }); setScreen('resetVerify'); }}
+        onNeedsVerification={(userId, email) => { setPendingVerify({ userId, email }); setScreen('verify'); }}
+        onBack={() => setScreen('signin')}
+        lang={interfaceLang}
+      />
+    );
+  }
+
+  if (screen === 'resetVerify' && pendingReset) {
+    return (
+      <VerifyCodeScreen
+        theme={theme}
+        userId={pendingReset.userId}
+        email={pendingReset.email}
+        verifyEndpoint="/auth/verify-reset-code"
+        resendEndpoint="/auth/resend-reset-code"
+        onSuccess={data => { setResetToken(data.resetToken); setScreen('resetNewPassword'); }}
+        onBack={() => { setPendingReset(null); setScreen('signin'); }}
+        lang={interfaceLang}
+      />
+    );
+  }
+
+  if (screen === 'resetNewPassword' && resetToken) {
+    return (
+      <ResetPasswordScreen
+        theme={theme}
+        toggleTheme={toggleTheme}
+        resetToken={resetToken}
+        onSuccess={() => {
+          setPendingReset(null);
+          setResetToken(null);
+          setAuthNotice(tr('passwordChangedNotice'));
+          setScreen('signin');
+        }}
+        onBack={() => { setResetToken(null); setScreen('signin'); }}
         lang={interfaceLang}
       />
     );
@@ -2463,6 +2790,7 @@ function makeStyles(c, theme) {
   sheetItemLabel:   { flex: 1, paddingVertical: 14, paddingHorizontal: 4 },
   sheetItemTxt:     { color: c.sheetItemText, fontSize: 17 },
   sheetItemTxtOn:   { color: c.sheetItemTextOn, fontWeight: '600' },
+  sheetCheckIcon:   { marginRight: 14 },
   pinIconBtn:    { width: 34, height: 40, justifyContent: 'center', alignItems: 'center' },
   sheetIconBtn:  { width: 34, height: 40, justifyContent: 'center', alignItems: 'center' },
   pinToast:      { textAlign: 'center', color: c.fieldError, fontSize: 11, marginTop: 4, marginBottom: 2 },
@@ -2547,18 +2875,24 @@ function makeStyles(c, theme) {
 
   // ── Auth screens ────────────────────────────────────────────────────────
   authScreen: { flex: 1, backgroundColor: c.authBg, paddingTop: 78, paddingHorizontal: 26 },
-  authThemeToggle: {
-    position: 'absolute', top: 22, right: 24,
-    width: 32, height: 32, alignItems: 'center', justifyContent: 'center',
+  authThemeToggle: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  authTopRightRow:    { position: 'absolute', top: 22, right: 24, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  authHeaderRightRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginLeft: 'auto' },
+  authLangBtn: {
+    minHeight: 28, paddingHorizontal: 10, borderRadius: 14,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: c.chipInsetBg,
   },
+  authLangBtnTxt: { color: c.iconMid, fontSize: 12, fontWeight: '700' },
   authLogoWrap: { alignItems: 'center', marginBottom: 38 },
-  authLogoBox: { width: 64, height: 64, borderRadius: 18, overflow: 'hidden', marginBottom: 16 },
-  authLogoTop:     { flex: 1, backgroundColor: '#0f172a', alignItems: 'center', justifyContent: 'center', transform: [{ rotate: '180deg' }] },
-  authLogoTopTxt:  { color: '#38bdf8', fontSize: 22, fontWeight: '900' },
-  authLogoBottom:    { flex: 1, backgroundColor: '#f8fafc', alignItems: 'center', justifyContent: 'center' },
-  authLogoBottomTxt: { color: '#0f172a', fontSize: 22, fontWeight: '800' },
   authTitle:    { color: c.textStrong, fontSize: 22, fontWeight: '700', textAlign: 'center' },
   authSubtitle: { color: c.iconDim, fontSize: 13, marginTop: 4, textAlign: 'center', lineHeight: 20 },
+  authNoticeRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 16,
+    backgroundColor: c.btnSaveBg, borderWidth: 1, borderColor: c.btnSaveBorder,
+    borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12,
+  },
+  authNoticeTxt: { color: c.btnSaveText, fontSize: 12.5, flexShrink: 1 },
 
   authHeaderRow:   { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 28 },
   authHeaderTitle: { color: c.textStrong, fontSize: 20, fontWeight: '700' },

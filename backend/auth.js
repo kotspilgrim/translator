@@ -161,13 +161,130 @@ router.post('/login', async (req, res) => {
   res.json({ token, user: { id: user.id, email: user.email, name: user.name } });
 });
 
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (typeof email !== 'string' || !EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'Введите корректный email' });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const { data: user, error } = await supabase
+    .from('users').select('id, email, email_verified').eq('email', normalizedEmail).maybeSingle();
+  if (error) { console.error('[auth] forgot-password lookup error:', error.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+  if (!user) return res.status(404).json({ error: 'Пользователь с таким email не найден' });
+  // An unverified account has no password worth resetting yet — route it
+  // through the existing signup-verification flow instead (same response
+  // shape /auth/login already uses for this case).
+  if (!user.email_verified) return res.status(403).json({ error: 'email_not_verified', userId: user.id });
+
+  const code      = generateCode();
+  const expiresAt = new Date(Date.now() + CODE_TTL_MS).toISOString();
+  const { error: updateErr } = await supabase.from('users').update({
+    verification_code: code, verification_code_expires_at: expiresAt, verification_attempts: 0,
+  }).eq('id', user.id);
+  if (updateErr) { console.error('[auth] forgot-password update error:', updateErr.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+
+  await sendVerificationCode(user.email, code);
+  res.json({ userId: user.id });
+});
+
+router.post('/verify-reset-code', async (req, res) => {
+  const { userId, code } = req.body;
+  if (!userId || typeof code !== 'string') {
+    return res.status(400).json({ error: 'Отсутствуют поля: userId, code' });
+  }
+
+  const { data: user, error } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+  if (error) { console.error('[auth] verify-reset-code lookup error:', error.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+
+  if (user.verification_attempts >= MAX_CODE_ATTEMPTS) {
+    return res.status(429).json({ error: 'Превышено число попыток, запросите новый код' });
+  }
+  if (!user.verification_code_expires_at || new Date(user.verification_code_expires_at) < new Date()) {
+    return res.status(400).json({ error: 'Код истёк, запросите новый' });
+  }
+  if (user.verification_code !== code) {
+    const attempts = user.verification_attempts + 1;
+    await supabase.from('users').update({ verification_attempts: attempts }).eq('id', userId);
+    return res.status(400).json({
+      error: 'Неверный код',
+      attemptsRemaining: Math.max(0, MAX_CODE_ATTEMPTS - attempts),
+    });
+  }
+
+  // Consume the code immediately so it can't be replayed after the password
+  // has already been changed with it.
+  await supabase.from('users').update({
+    verification_code: null, verification_code_expires_at: null, verification_attempts: 0,
+  }).eq('id', userId);
+
+  // Short-lived, purpose-scoped token — NOT a session token (see requireAuth
+  // below, which explicitly rejects purpose: 'password_reset').
+  const resetToken = jwt.sign({ sub: user.id, purpose: 'password_reset' }, process.env.JWT_SECRET, { expiresIn: '10m' });
+  res.json({ resetToken });
+});
+
+router.post('/resend-reset-code', async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'Отсутствует поле: userId' });
+
+  const { data: user, error } = await supabase
+    .from('users').select('id, email, email_verified').eq('id', userId).maybeSingle();
+  if (error) { console.error('[auth] resend-reset-code lookup error:', error.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (!user.email_verified) return res.status(400).json({ error: 'Email не подтверждён' });
+
+  const code      = generateCode();
+  const expiresAt = new Date(Date.now() + CODE_TTL_MS).toISOString();
+  const { error: updateErr } = await supabase.from('users').update({
+    verification_code: code, verification_code_expires_at: expiresAt, verification_attempts: 0,
+  }).eq('id', userId);
+  if (updateErr) { console.error('[auth] resend-reset-code update error:', updateErr.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+
+  await sendVerificationCode(user.email, code);
+  res.json({ ok: true });
+});
+
+router.post('/reset-password', async (req, res) => {
+  const { resetToken, password } = req.body;
+  if (typeof resetToken !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Отсутствуют поля: resetToken, password' });
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(resetToken, process.env.JWT_SECRET);
+  } catch {
+    return res.status(401).json({ error: 'Ссылка на сброс пароля недействительна или истекла' });
+  }
+  if (payload.purpose !== 'password_reset') {
+    return res.status(401).json({ error: 'Недействительный токен' });
+  }
+
+  const rules = checkPasswordRules(password);
+  if (!passwordIsValid(rules)) {
+    return res.status(400).json({ error: 'Пароль не соответствует требованиям', rules });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const { error: updateErr } = await supabase.from('users').update({ password_hash: passwordHash }).eq('id', payload.sub);
+  if (updateErr) { console.error('[auth] reset-password update error:', updateErr.message); return res.status(500).json({ error: 'Ошибка базы данных' }); }
+
+  res.json({ ok: true });
+});
+
 function requireAuth(req, res, next) {
   const [scheme, token] = (req.headers.authorization || '').split(' ');
   if (scheme !== 'Bearer' || !token) {
     return res.status(401).json({ error: 'Не авторизован' });
   }
   try {
-    req.userId = jwt.verify(token, process.env.JWT_SECRET).sub;
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    // Password-reset tokens are single-purpose and must not double as a
+    // general session token, even within their short 10-minute window.
+    if (payload.purpose === 'password_reset') throw new Error('wrong token type');
+    req.userId = payload.sub;
     next();
   } catch {
     res.status(401).json({ error: 'Недействительный токен' });
