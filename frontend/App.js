@@ -107,7 +107,7 @@ const COLORS = {
     // Darker/more opaque than scrimLight specifically for the menu drawer —
     // at scrimLight's alpha the varied colors behind it (bubbles, buttons,
     // root bg) blend through unevenly instead of reading as one flat tint.
-    menuScrimBg: 'rgba(0,0,0,0.72)',
+    menuScrimBg: 'rgba(0,0,0,0.65)',
 
     micBg: '#202020', micBorder: '#2e2e2e', micIcon: '#e6e6e6',
     micRecBg: '#7f1d1d', micRecBorder: '#ef4444', micRecIcon: '#e6e6e6',
@@ -2690,21 +2690,32 @@ function makeStyles(c, theme) {
 
   // Menu button + drawer
   menuBtn: {
-    position: 'absolute', top: 58, left: 14, zIndex: 20, elevation: 6,
+    position: 'absolute', top: 58, left: 14, zIndex: 20,
     width: 36, height: 36, borderRadius: 18,
     backgroundColor: c.ctrlBg, borderWidth: 1, borderColor: c.ctrlBorder,
     justifyContent: 'center', alignItems: 'center',
-    ...shadow(theme, SHADOW_SM),
+    ...shadow(theme, SHADOW_SM), elevation: 0,
+    // elevation forced to 0 (even in light theme, where SHADOW_SM would
+    // otherwise set elevation:2) — see menuScrim below for why.
   },
   menuScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: c.menuScrimBg, zIndex: 90, elevation: 20,
+    backgroundColor: c.menuScrimBg, zIndex: 90,
+    // No `elevation` anywhere in this button/scrim/drawer group. Android's
+    // elevation forces a per-frame shadow-outline recompute, and combined
+    // with the drawer's animated translateX this produced a thin ghost
+    // edge trailing the real one (the reported "double border") — a
+    // compositing artifact, not something opacity could paper over.
+    // Instead we rely on plain paint order: menuBtn renders before this
+    // scrim in JSX, so the scrim (and the drawer inside it) already draws
+    // on top without needing elevation at all.
   },
   menuDrawer: {
     width: '74%', height: '100%', backgroundColor: c.menuDrawerBg,
-    borderRightWidth: 1, borderRightColor: c.menuDrawerBorder,
     paddingTop: 56, paddingHorizontal: 18,
-    ...shadow(theme, SHADOW_LG),
+    // Deliberately no border or drop shadow here — the color contrast between
+    // the opaque drawer and the dark scrim is already a clean edge; adding a
+    // hairline border on top of that produced a doubled-line look.
   },
   menuBrand: { color: c.menuBrand, fontSize: 16, fontWeight: '700' },
   menuSub:   { color: c.menuSub, fontSize: 11, marginTop: 2, marginBottom: 20 },
