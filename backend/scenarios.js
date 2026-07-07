@@ -106,11 +106,21 @@ router.delete('/:id', requireAuth, async (req, res) => {
   res.status(204).end();
 });
 
+// Used when the user has no scenario selected at all (scenarioId is
+// null/empty) — a fixed, generic prompt rather than the old "Контекст: не
+// указан" filler text.
+const NO_SCENARIO_PROMPT = `Ты профессиональный переводчик, специализирующийся на {fromLang} и корейском языках.
+Контекст: базовый перевод
+Стиль: вежливый официальный.
+Задание: переведи текст с {fromLang} языка на {toLang} язык.
+Правило: верни ТОЛЬКО перевод — без пояснений, транслитерации, скобок и комментариев.`;
+
 // Used by /translate (server.js) to build the system prompt. Returns the
-// stored scenario_prompt with {fromLang}/{toLang} substituted, or — if
-// scenarioId isn't a registered scenario — falls back to treating it as
-// free-text context (same backward-compat behavior the old file-based
-// version had for an unregistered/custom context string).
+// stored scenario_prompt with {fromLang}/{toLang} substituted; if scenarioId
+// is set but isn't a registered scenario, falls back to treating it as
+// free-text context (backward-compat for the old file-based version's
+// unregistered/custom context strings); if scenarioId is falsy (no scenario
+// selected), uses the fixed NO_SCENARIO_PROMPT above.
 async function getSystemPrompt(scenarioId, fromLang, toLang) {
   if (scenarioId) {
     const { data: entry } = await supabase
@@ -120,8 +130,11 @@ async function getSystemPrompt(scenarioId, fromLang, toLang) {
         .replace(/\{fromLang\}/g, fromLang)
         .replace(/\{toLang\}/g,   toLang);
     }
+    return `Ты профессиональный переводчик. Контекст: ${scenarioId}. Переведи текст с ${fromLang} языка на ${toLang} язык. Верни только перевод, без пояснений.`;
   }
-  return `Ты профессиональный переводчик. Контекст: ${scenarioId || 'не указан'}. Переведи текст с ${fromLang} языка на ${toLang} язык. Верни только перевод, без пояснений.`;
+  return NO_SCENARIO_PROMPT
+    .replace(/\{fromLang\}/g, fromLang)
+    .replace(/\{toLang\}/g,   toLang);
 }
 
 router.getSystemPrompt = getSystemPrompt;

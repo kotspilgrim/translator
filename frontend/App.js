@@ -253,7 +253,7 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme, l
   const [showDrop, setShowDrop] = useState(false);
 
   const viewScenario = scenarios.find(s => s.id === viewId);
-  const viewName = viewScenario ? scenarioName(lang, viewScenario) : tr('scenarioFallback');
+  const viewName = viewId === null ? tr('noScenarioTab') : (viewScenario ? scenarioName(lang, viewScenario) : tr('scenarioFallback'));
   const filtered = history.filter(i => i.scenarioId === viewId);
 
   return (
@@ -275,6 +275,14 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme, l
       {showDrop && (
         <View style={S.histScenDrop}>
           <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+            <TouchableOpacity
+              style={[S.histScenOpt, viewId === null && S.histScenOptOn]}
+              onPress={() => { setViewId(null); setShowDrop(false); }}
+            >
+              <Text style={[S.histScenOptTxt, viewId === null && S.histScenOptTxtOn]} numberOfLines={1}>
+                {tr('noScenarioTab')}
+              </Text>
+            </TouchableOpacity>
             {scenarios.map(s => (
               <TouchableOpacity
                 key={s.id}
@@ -299,6 +307,7 @@ function HistoryScreen({ history, scenarios, initialScenarioId, onBack, theme, l
           data={filtered}
           keyExtractor={i => i.id}
           contentContainerStyle={S.histList}
+          inverted
           renderItem={({ item }) => {
             const isRu = item.direction === 'ru-ko';
             const bubStyle  = isRu ? S.chatBubRu : S.chatBubKo;
@@ -1149,7 +1158,7 @@ function LanguageSheet({ visible, onClose, options, selected, onSelect, title, c
                 style={[S.sheetItem, selected === o.code && S.sheetItemOn]}
                 onPress={() => { onSelect(o.code); onClose(); }}
               >
-                <View style={S.sheetItemLabel}>
+                <View style={[S.sheetItemLabel, S.langSheetItemLabel]}>
                   <Text style={[S.sheetItemTxt, selected === o.code && S.sheetItemTxtOn]}>{o.label}</Text>
                 </View>
                 {selected === o.code && <MI name="check" size={18} color={c.pinAccent} style={S.sheetCheckIcon} />}
@@ -1339,7 +1348,7 @@ export default function App() {
 
   // ── Scenarios (source of truth: backend) ───────────────────────────────────
   const [scenarios,   setScenarios]   = useState(FALLBACK_SCENARIOS);
-  const [scenarioId,  setScenarioId]  = useState(FALLBACK_SCENARIOS[0].id);
+  const [scenarioId,  setScenarioId]  = useState(null);
   const scenarioIdRef = useRef(scenarioId);
   useEffect(() => { scenarioIdRef.current = scenarioId; }, [scenarioId]);
   const scenario = scenarioName(interfaceLang, scenarios.find(s => s.id === scenarioId));
@@ -2136,7 +2145,7 @@ export default function App() {
         {/* ── Gutter: scenario + history between bubbles ── */}
         <View style={S.gutter}>
           <TouchableOpacity style={S.scenBtn} onPress={openScenarioPicker}>
-            <Text style={S.scenTxt} numberOfLines={1}>{isGuest ? tr('noScenarioGuest') : scenario}</Text>
+            <Text style={S.scenTxt} numberOfLines={1}>{isGuest ? tr('noScenarioGuest') : (scenario || tr('noScenarioSelected'))}</Text>
             <MI name="expand-more" size={20} color={c.iconDim} />
           </TouchableOpacity>
           <TouchableOpacity style={S.histBtn} onPress={() => setScreen('history')}>
@@ -2402,6 +2411,16 @@ export default function App() {
                     <MI name="close" size={22} color={c.sheetClose} />
                   </TouchableOpacity>
                 </View>
+
+                <TouchableOpacity
+                  style={[S.sheetItem, scenarioId === null && S.sheetItemOn]}
+                  onPress={() => { setScenarioId(null); closePicker(); }}
+                >
+                  <View style={S.sheetItemLabel}>
+                    <Text style={[S.sheetItemTxt, scenarioId === null && S.sheetItemTxtOn]}>{tr('noScenarioTab')}</Text>
+                  </View>
+                  {scenarioId === null && <MI name="check" size={18} color={c.pinAccent} style={S.sheetCheckIcon} />}
+                </TouchableOpacity>
 
                 <ScrollView style={S.sheetList} showsVerticalScrollIndicator={false}>
                   {pinnedScenarios.length > 0 && (
@@ -2744,7 +2763,10 @@ function makeStyles(c, theme) {
   histScenOptOn:   { backgroundColor: c.histOptActiveBg },
   histScenOptTxt:  { color: c.histOptText, fontSize: 13 },
   histScenOptTxtOn:{ color: c.textStrong, fontWeight: '600' },
-  histList:     { padding: 16, paddingBottom: 40 },
+  // FlatList is `inverted` (chat-style, newest at the visual bottom) — the
+  // content-space padding is drawn before the flip, so paddingTop here is
+  // what actually shows at the visual bottom.
+  histList:     { padding: 16, paddingTop: 40 },
   histEmpty:    { flex: 1, justifyContent: 'center', alignItems: 'center' },
   histEmptyTxt: { color: c.histEmptyText, fontSize: 16 },
   chatWrap:     { marginBottom: 10, flexDirection: 'row' },
@@ -2788,6 +2810,7 @@ function makeStyles(c, theme) {
   },
   sheetItemOn:      { backgroundColor: c.sheetItemOnBg },
   sheetItemLabel:   { flex: 1, paddingVertical: 14, paddingHorizontal: 4 },
+  langSheetItemLabel: { paddingLeft: 14 },
   sheetItemTxt:     { color: c.sheetItemText, fontSize: 17 },
   sheetItemTxtOn:   { color: c.sheetItemTextOn, fontWeight: '600' },
   sheetCheckIcon:   { marginRight: 14 },
@@ -2874,9 +2897,9 @@ function makeStyles(c, theme) {
   },
 
   // ── Auth screens ────────────────────────────────────────────────────────
-  authScreen: { flex: 1, backgroundColor: c.authBg, paddingTop: 78, paddingHorizontal: 26 },
+  authScreen: { flex: 1, backgroundColor: c.authBg, paddingTop: 94, paddingHorizontal: 26 },
   authThemeToggle: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  authTopRightRow:    { position: 'absolute', top: 22, right: 24, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  authTopRightRow:    { position: 'absolute', top: 36, right: 24, flexDirection: 'row', alignItems: 'center', gap: 10 },
   authHeaderRightRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginLeft: 'auto' },
   authLangBtn: {
     minHeight: 28, paddingHorizontal: 10, borderRadius: 14,
@@ -2943,7 +2966,7 @@ function makeStyles(c, theme) {
   codeHintIcon: {
     width: 56, height: 56, borderRadius: 16, backgroundColor: c.authFieldBg,
     borderWidth: 1, borderColor: c.authFieldBorder, alignItems: 'center', justifyContent: 'center',
-    marginBottom: 22,
+    marginBottom: 22, alignSelf: 'center',
   },
   codeRow: { flexDirection: 'row', gap: 9, marginTop: 30, marginBottom: 26 },
   codeBox: {

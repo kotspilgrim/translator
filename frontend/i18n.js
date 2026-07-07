@@ -117,6 +117,8 @@ const S = {
   appBrand: { ru: 'One to 한', en: 'One to 한', ko: 'One to 한', ja: 'One to 한', zh: 'One to 한', uz: 'One to 한', kk: 'One to 한', ky: 'One to 한', mn: 'One to 한' },
   guestLabel: { ru: 'Гость', en: 'Guest', ko: '게스트', ja: 'ゲスト', zh: '访客', uz: 'Mehmon', kk: 'Қонақ', ky: 'Конок', mn: 'Зочин' },
   noScenarioGuest: { ru: 'Без сценария (гость)', en: 'No scenario (guest)', ko: '시나리오 없음 (게스트)', ja: 'シナリオなし（ゲスト）', zh: '无场景（访客）', uz: 'Ssenariysiz (mehmon)', kk: 'Сценариясыз (қонақ)', ky: 'Сценариссиз (конок)', mn: 'Хувилбаргүй (зочин)' },
+  noScenarioSelected: { ru: 'Выберите сценарий', en: 'Choose a scenario', ko: '시나리오를 선택하세요', ja: 'シナリオを選択してください', zh: '请选择场景', uz: 'Ssenariyni tanlang', kk: 'Сценарийді таңдаңыз', ky: 'Сценарийди тандаңыз', mn: 'Хувилбар сонгоно уу' },
+  noScenarioTab: { ru: 'Без сценария', en: 'No scenario', ko: '시나리오 없음', ja: 'シナリオなし', zh: '无场景', uz: 'Ssenariysiz', kk: 'Сценариясыз', ky: 'Сценариссиз', mn: 'Хувилбаргүй' },
   menuScenarios: { ru: 'Сценарии', en: 'Scenarios', ko: '시나리오', ja: 'シナリオ', zh: '场景', uz: 'Ssenariylar', kk: 'Сценарийлер', ky: 'Сценарийлер', mn: 'Хувилбарууд' },
   menuHistory: { ru: 'История', en: 'History', ko: '기록', ja: '履歴', zh: '历史记录', uz: 'Tarix', kk: 'Тарих', ky: 'Тарых', mn: 'Түүх' },
   menuTestConnection: { ru: 'Проверить связь', en: 'Test connection', ko: '연결 확인', ja: '接続テスト', zh: '测试连接', uz: 'Aloqani tekshirish', kk: 'Байланысты тексеру', ky: 'Байланышты текшерүү', mn: 'Холболт шалгах' },
