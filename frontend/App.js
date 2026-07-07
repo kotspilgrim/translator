@@ -3,6 +3,7 @@ import {
   StyleSheet, Text, View, TouchableOpacity, ActivityIndicator,
   ScrollView, FlatList, Modal, TextInput, Keyboard,
   KeyboardAvoidingView, Platform, Animated, Easing, useWindowDimensions,
+  BackHandler, ToastAndroid,
 } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -43,6 +44,7 @@ const SOURCE_LANG_KEY    = 'translator_source_lang';
 const HISTORY_TTL   = 24 * 60 * 60 * 1000;
 const SILENCE_MS    = 7000;
 const MAX_PINNED    = 3;
+const MAX_GENERATE  = 3; // scenario-prompt generations allowed per create session
 // A conversation only counts as the SAME context while consecutive turns are
 // less than 2h apart — an idle gap of 2h+ means whatever was said before it
 // is treated as a different conversation and dropped from the model's
@@ -1192,8 +1194,68 @@ export default function App() {
   // A concrete pixel maxHeight sidesteps that: short content still hugs
   // (ScrollView sizes to content up to this cap), long content scrolls
   // internally while Отмена/Создать stay pinned below, always reachable.
-  const { height: windowHeight } = useWindowDimensions();
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const formScrollMaxHeight = Math.round(windowHeight * 0.45);
+  const menuDrawerWidth = Math.round(windowWidth * 0.74); // matches menuDrawer's width: '74%'
+
+  // ── Menu drawer open/close animation ────────────────────────────────────────
+  // menuMounted stays true through the closing animation — {showMenu && ...}
+  // would unmount instantly with no time to animate out.
+  const [menuMounted, setMenuMounted] = useState(false);
+  const menuAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (showMenu) {
+      setMenuMounted(true);
+      menuAnim.setValue(0);
+      Animated.timing(menuAnim, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+    } else {
+      Animated.timing(menuAnim, { toValue: 0, duration: 220, easing: Easing.in(Easing.cubic), useNativeDriver: true })
+        .start(({ finished }) => { if (finished) setMenuMounted(false); });
+    }
+  }, [showMenu]);
+
+  // ── Hardware/gesture back: close the menu if open, otherwise require a
+  // second press within 2s to actually exit (Android convention) ────────────
+  const exitArmedRef = useRef(false);
+  const exitTimerRef = useRef(null);
+  useEffect(() => {
+    if (screen !== 'main') return;
+    const onBackPress = () => {
+      if (showMenu) { setShowMenu(false); return true; }
+      if (exitArmedRef.current) {
+        BackHandler.exitApp();
+        return true;
+      }
+      exitArmedRef.current = true;
+      ToastAndroid.show(tr('exitConfirm'), ToastAndroid.SHORT);
+      clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = setTimeout(() => { exitArmedRef.current = false; }, 2000);
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [screen, showMenu, interfaceLang]);
+
+  // ── Auto connection status (passive, pings /health every 5s) ───────────────
+  const [autoConnOk, setAutoConnOk] = useState(null); // null = not checked yet | true | false
+  useEffect(() => {
+    let cancelled = false;
+    const ping = async () => {
+      try {
+        const ctrl = new AbortController();
+        const tid  = setTimeout(() => ctrl.abort(), 4000);
+        const resp = await fetch(`${BACKEND_URL}/health`, { signal: ctrl.signal });
+        clearTimeout(tid);
+        const data = await resp.json().catch(() => ({}));
+        if (!cancelled) setAutoConnOk(resp.ok && !!data.ok);
+      } catch {
+        if (!cancelled) setAutoConnOk(false);
+      }
+    };
+    ping();
+    const id = setInterval(ping, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   // ── Connectivity ─────────────────────────────────────────────────────────────
   // isOnlineRef mirrors isOnline for doTranslate/openScenarioPicker, which can
@@ -1379,6 +1441,11 @@ export default function App() {
   const [createPrompt,  setCreatePrompt]  = useState('');
   const [createSaving,  setCreateSaving]  = useState(false);
   const [createError,   setCreateError]   = useState('');
+  const [generating,    setGenerating]    = useState(false);
+  // Per-creation-session cap — the scenario has no id yet at this point (it
+  // isn't saved), so this can't be tracked server-side; resets in closePicker
+  // like the other create-form fields.
+  const [generateCount, setGenerateCount] = useState(0);
 
   const [editingScenario, setEditingScenario] = useState(null); // { id, name }
   const [editPrompt,      setEditPrompt]      = useState('');
@@ -1441,15 +1508,12 @@ export default function App() {
 
   const silenceTimer = useRef(null);
 
-  // ── Connection test ──────────────────────────────────────────────────────
-  const [connStatus, setConnStatus] = useState('idle'); // idle | checking | ok | bad
-  const [connMsg,    setConnMsg]    = useState('');
-  const connResetTimer = useRef(null);
-
+  // ── Connection test (manual, menu-triggered) ────────────────────────────────
+  // The main screen no longer has a tappable test button/result pill (see
+  // autoConnOk above) — this is only reachable from the menu drawer now, so
+  // feedback is a toast instead of setting state some component still reads.
   const testConnection = async () => {
-    clearTimeout(connResetTimer.current);
-    setConnStatus('checking');
-    setConnMsg(tr('checking'));
+    ToastAndroid.show(tr('checking'), ToastAndroid.SHORT);
     const started = Date.now();
     try {
       const ctrl = new AbortController();
@@ -1458,17 +1522,13 @@ export default function App() {
       clearTimeout(tid);
       const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.ok) {
-        setConnStatus('ok');
-        setConnMsg(tr('msSuffix', { ms: Date.now() - started }));
+        ToastAndroid.show(tr('msSuffix', { ms: Date.now() - started }), ToastAndroid.SHORT);
       } else {
-        setConnStatus('bad');
-        setConnMsg(tr('noConnection'));
+        ToastAndroid.show(tr('noConnection'), ToastAndroid.SHORT);
       }
     } catch {
-      setConnStatus('bad');
-      setConnMsg(tr('noConnection'));
+      ToastAndroid.show(tr('noConnection'), ToastAndroid.SHORT);
     }
-    connResetTimer.current = setTimeout(() => setConnStatus('idle'), 2500);
   };
 
   // ── History ───────────────────────────────────────────────────────────────
@@ -1569,8 +1629,38 @@ export default function App() {
   const closePicker = () => {
     setShowPicker(false);
     setSheetView('list');
-    setCreateName(''); setCreatePrompt(''); setCreateError('');
+    setCreateName(''); setCreatePrompt(''); setCreateError(''); setGenerateCount(0);
     setEditingScenario(null); setEditPrompt(''); setEditError('');
+  };
+
+  const handleGeneratePrompt = async () => {
+    const name = createName.trim();
+    if (!name) { setCreateError(tr('generateNameRequired')); return; }
+    if (generateCount >= MAX_GENERATE) return;
+    setGenerating(true);
+    setCreateError('');
+    try {
+      const resp = await fetch(`${BACKEND_URL}/scenarios/generate-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader() },
+        body: JSON.stringify({ name }),
+      });
+      const data = await resp.json();
+      // Only counts against the limit once a request has actually reached
+      // OpenAI (a real attempt/cost) — a client-side network failure below
+      // never got that far, so it doesn't consume one of the 3 tries.
+      setGenerateCount(n => n + 1);
+      if (resp.ok) {
+        setCreatePrompt(data.prompt);
+      } else if (data.error === 'no_logic') {
+        setCreateError(tr('generateNoLogic'));
+      } else {
+        setCreateError(data.error || tr('generateFailedDefault'));
+      }
+    } catch {
+      setCreateError(tr('noServerConnection'));
+    }
+    setGenerating(false);
   };
 
   const handleCreateScenario = async () => {
@@ -2226,41 +2316,23 @@ export default function App() {
               />
             </TouchableOpacity>
 
-            {/* Test connection — kept in the corner, away from the mic, so it can't be hit by accident */}
-            <TouchableOpacity
+            {/* Passive connection status — auto-pings /health every 5s (see
+                autoConnOk effect above), no longer a tappable test button.
+                Manual on-demand check still lives in the menu drawer
+                ("Проверить связь" → testConnection). */}
+            <View
               style={[
                 S.testBtn,
-                connStatus === 'ok'       && S.testBtnOk,
-                connStatus === 'bad'      && S.testBtnBad,
-                connStatus === 'checking' && S.testBtnChecking,
+                autoConnOk === true  && S.testBtnOk,
+                autoConnOk === false && S.testBtnBad,
               ]}
-              onPress={testConnection}
-              disabled={connStatus === 'checking'}
             >
               <MI
                 name="network-check"
                 size={16}
-                color={
-                  connStatus === 'ok'       ? c.testOk :
-                  connStatus === 'bad'      ? c.testBad :
-                  connStatus === 'checking' ? c.testChecking : c.testIconIdle
-                }
+                color={autoConnOk === true ? c.testOk : autoConnOk === false ? c.testBad : c.testIconIdle}
               />
-              {connStatus !== 'idle' && (
-                <View style={S.testPill}>
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      S.testPillTxt,
-                      connStatus === 'ok'  && S.testPillOk,
-                      connStatus === 'bad' && S.testPillBad,
-                    ]}
-                  >
-                    {connMsg}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
+            </View>
           </View>
         )}
       </KeyboardAvoidingView>
@@ -2271,13 +2343,19 @@ export default function App() {
       </TouchableOpacity>
 
       {/* ── Menu drawer ──────────────────────────────────────────────────────── */}
-      {showMenu && (
-        <TouchableOpacity
-          style={S.menuScrim}
+      {menuMounted && (
+        <AnimatedTouchable
+          style={[S.menuScrim, { opacity: menuAnim }]}
           activeOpacity={1}
           onPress={() => setShowMenu(false)}
         >
-          <View style={S.menuDrawer} onStartShouldSetResponder={() => true}>
+          <Animated.View
+            style={[
+              S.menuDrawer,
+              { transform: [{ translateX: menuAnim.interpolate({ inputRange: [0, 1], outputRange: [-menuDrawerWidth, 0] }) }] },
+            ]}
+            onStartShouldSetResponder={() => true}
+          >
             <Text style={S.menuBrand}>{tr('appBrand')}</Text>
             <Text style={S.menuSub}>{isGuest ? tr('guestLabel') : (authUser?.email || BACKEND_URL.replace('http://', ''))}</Text>
 
@@ -2318,8 +2396,8 @@ export default function App() {
                 <Text style={S.menuItemTxt}>{tr('menuLogout')}</Text>
               </TouchableOpacity>
             )}
-          </View>
-        </TouchableOpacity>
+          </Animated.View>
+        </AnimatedTouchable>
       )}
 
       {/* ── Interface language picker ── */}
@@ -2467,7 +2545,21 @@ export default function App() {
                     placeholderTextColor={c.fieldPh}
                   />
 
-                  <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
+                  <View style={S.fieldLblRow}>
+                    <Text style={S.fieldLbl}>{tr('promptLabel')}</Text>
+                    <TouchableOpacity
+                      style={[S.generateBtn, generateCount >= MAX_GENERATE && S.generateBtnDisabled]}
+                      onPress={handleGeneratePrompt}
+                      disabled={generating || generateCount >= MAX_GENERATE}
+                    >
+                      {generating
+                        ? <ActivityIndicator color={c.linkColor} size="small" />
+                        : <MI name="auto-awesome" size={14} color={generateCount >= MAX_GENERATE ? c.iconDim : c.linkColor} />}
+                      <Text style={[S.generateBtnTxt, generateCount >= MAX_GENERATE && S.generateBtnTxtDisabled]}>
+                        {tr('generateBtn')}{generateCount > 0 ? ` (${generateCount}/${MAX_GENERATE})` : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                   <TextInput
                     style={S.fieldTextarea}
                     value={createPrompt}
@@ -2628,21 +2720,6 @@ function makeStyles(c, theme) {
   },
   testBtnOk:       { borderColor: c.testOk },
   testBtnBad:      { borderColor: c.testBad },
-  testBtnChecking: { borderColor: c.testChecking },
-  testPill: {
-    // Fixed width anchored to the button's right edge — an absolutely
-    // positioned pill with only `alignSelf: 'center'` and no explicit width
-    // gets measured against the 34px button and wraps the text one letter
-    // per line instead of rendering it horizontally.
-    position: 'absolute', bottom: '100%', right: 0, marginBottom: 6, width: 120,
-    alignItems: 'center',
-    backgroundColor: c.pillBg, borderWidth: 1, borderColor: c.pillBorder, borderRadius: 20,
-    paddingHorizontal: 10, paddingVertical: 4,
-    ...shadow(theme, SHADOW_SM),
-  },
-  testPillTxt: { fontSize: 10, color: c.pillText, textAlign: 'center' },
-  testPillOk:  { color: c.testOk },
-  testPillBad: { color: c.testBad },
 
   // Bubbles
   bubble: {
@@ -2839,6 +2916,15 @@ function makeStyles(c, theme) {
     fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.8,
     color: c.fieldLbl, marginBottom: 6, marginTop: 4,
   },
+  fieldLblRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  generateBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12,
+    backgroundColor: c.chipInsetBg, borderWidth: 1, borderColor: c.authFieldBorder,
+  },
+  generateBtnDisabled: { opacity: 0.5 },
+  generateBtnTxt:         { color: c.linkColor, fontSize: 11.5, fontWeight: '600' },
+  generateBtnTxtDisabled: { color: c.iconDim },
   fieldInput: {
     backgroundColor: c.fieldBg, borderWidth: 1, borderColor: c.fieldBorder, borderRadius: 10,
     color: c.fieldNameText, fontSize: 15, paddingHorizontal: 13, paddingVertical: 11,

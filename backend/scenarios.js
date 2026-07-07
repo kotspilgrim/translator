@@ -1,9 +1,11 @@
 const express  = require('express');
 const jwt      = require('jsonwebtoken');
+const OpenAI   = require('openai');
 const supabase = require('./supabaseClient');
 const { requireAuth } = require('./auth');
 
 const router = express.Router();
+const openai  = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const MAX_NAME_LEN   = 60;
 const MAX_PROMPT_LEN = 4000;
@@ -56,6 +58,54 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'Сценарий не найден' });
   }
   res.json({ ...toApi(entry), prompt: entry.scenario_prompt });
+});
+
+// Generates a scenario_prompt from just a name, for the "Сгенерировать"
+// button in the create-scenario sheet — uses the same 4-line template as the
+// built-in scenarios (see NO_SCENARIO_PROMPT below for the no-scenario
+// variant). Per-scenario generation-count limiting (max 3) lives client-side
+// (the scenario doesn't have an id yet at this point — it isn't created).
+router.post('/generate-prompt', requireAuth, async (req, res) => {
+  const { name } = req.body;
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'Введите название сценария' });
+  }
+  if (name.length > MAX_NAME_LEN) {
+    return res.status(400).json({ error: `Название слишком длинное (до ${MAX_NAME_LEN} симв.)` });
+  }
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.4,
+      messages: [
+        {
+          role: 'system',
+          content: `Ты помогаешь составлять системные промпты для переводчика РУССКИЙ⇄КОРЕЙСКИЙ по названию сценария общения (например: "В аэропорту", "Разговор с врачом").
+Сгенерируй промпт СТРОГО в этом формате, ровно 4 строки, без вступлений и пояснений до/после:
+Ты профессиональный переводчик, специализирующийся на {fromLang} и корейском языках.
+Контекст: <краткое описание ситуации на основе названия сценария>
+Стиль: <подходящий стиль общения для этой ситуации>
+Задание: переведи текст с {fromLang} языка на {toLang} язык.
+Правило: верни ТОЛЬКО перевод — без пояснений, транслитерации, скобок и комментариев.
+
+Литералы {fromLang} и {toLang} должны остаться БУКВАЛЬНО как плейсхолдеры в фигурных скобках — не заменяй их названием конкретного языка.
+
+Если название сценария бессмысленное, случайный набор символов/цифр или никак не описывает ситуацию общения между людьми — не придумывай ничего и верни ровно одну строку без пояснений: NO_LOGIC`,
+        },
+        { role: 'user', content: `Название сценария: "${name.trim()}"` },
+      ],
+    });
+
+    const raw = completion.choices[0]?.message?.content?.trim() || '';
+    if (!raw || raw === 'NO_LOGIC' || raw.startsWith('NO_LOGIC')) {
+      return res.status(422).json({ error: 'no_logic' });
+    }
+    res.json({ prompt: raw });
+  } catch (error) {
+    console.error('[scenarios] generate-prompt error:', error.message);
+    res.status(500).json({ error: 'Не удалось сгенерировать промпт' });
+  }
 });
 
 router.post('/', requireAuth, async (req, res) => {
