@@ -4,10 +4,21 @@ const express      = require('express');
 const cors         = require('cors');
 const helmet       = require('helmet');
 const rateLimit    = require('express-rate-limit');
+const jwt          = require('jsonwebtoken');
 const OpenAI       = require('openai');
 const supabase     = require('./supabaseClient');
 const authRouter   = require('./auth');
 const scenariosRouter = require('./scenarios');
+const { encryptText } = require('./crypto');
+
+// Same never-rejects pattern as scenarios.js's optionalAuth — /translate
+// itself stays open to guests, this only attributes the DB log row to a
+// user when a valid token happens to be present.
+function optionalAuth(req) {
+  const [scheme, token] = (req.headers.authorization || '').split(' ');
+  if (scheme !== 'Bearer' || !token) return null;
+  try { return jwt.verify(token, process.env.JWT_SECRET).sub; } catch { return null; }
+}
 
 const app  = express();
 // Railway (and most PaaS hosts) inject their own PORT at runtime — the
@@ -139,16 +150,23 @@ app.post('/translate', async (req, res) => {
 
     const translation = completion.choices[0]?.message?.content?.trim() || '';
 
-    if (supabase) {
+    // Logging is skipped (not fallen back to plaintext) when the encryption
+    // key isn't configured — same "optional side effect, degrade by skipping"
+    // pattern as Supabase/Resend elsewhere, but here silently writing
+    // plaintext would defeat the point of encrypting it at all.
+    if (supabase && process.env.TRANSLATIONS_ENC_KEY) {
       supabase.from('translations').insert({
-        original_text:   text,
-        translated_text: translation,
+        original_text:   encryptText(text),
+        translated_text: encryptText(translation),
         from_lang:       fromLang,
         to_lang:         toLang,
         scenario:        context || null,
+        user_id:         optionalAuth(req),
       }).then(({ error: dbErr }) => {
         if (dbErr) console.warn('Supabase insert error:', dbErr.message);
       });
+    } else if (supabase) {
+      console.warn('[translate] TRANSLATIONS_ENC_KEY не настроен — запись в translations пропущена');
     }
 
     res.json({ translation });
