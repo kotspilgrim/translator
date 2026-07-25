@@ -184,6 +184,25 @@ app.post('/translate', async (req, res) => {
   }
 });
 
+// ── Supabase keep-alive ──────────────────────────────────────────────────
+// Supabase's free tier pauses (and eventually deletes) a project after
+// about a week of no API activity. This app's real traffic is low/bursty
+// (personal 2-user app), so a quiet week is entirely plausible — this is a
+// trivial, harmless query run on a timer purely to register activity and
+// keep the project alive, independent of whether anyone actually opens the
+// app. No-op if Supabase isn't configured, same as everywhere else that
+// treats it as optional.
+const SUPABASE_KEEPALIVE_MS = 24 * 60 * 60 * 1000; // once a day — comfortably under the ~7-day pause window
+if (supabase) {
+  const pingSupabaseKeepAlive = () => {
+    supabase.from('scenarios').select('id').limit(1)
+      .then(({ error }) => { if (error) console.error('Supabase keep-alive query failed:', error.message); })
+      .catch(err => console.error('Supabase keep-alive query failed:', err.message));
+  };
+  pingSupabaseKeepAlive();
+  setInterval(pingSupabaseKeepAlive, SUPABASE_KEEPALIVE_MS);
+}
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Translator backend запущен на http://0.0.0.0:${PORT}`);
 });
