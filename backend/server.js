@@ -90,7 +90,12 @@ const MAX_TEXT_LEN     = 1000;
 // of the single system message alongside the scenario prompt; as a second,
 // separate system-role message it was consistently ignored and fell back to
 // literal, nonsensical word-for-word translation of the idiom).
-const IDIOM_INSTRUCTION = 'Фразеологизмы, идиомы, пословицы и устойчивые выражения НЕЛЬЗЯ переводить дословно — подбирай существующий эквивалент в языке перевода, а если точного эквивалента нет, передай смысл выражения обычными словами. Например, русское "когда рак на горе свистнет" (значение — "никогда") на корейский нужно переводить через смысловой эквивалент вроде "해가 서쪽에서 뜨면" ("когда солнце взойдёт на западе"), а не дословным переводом про рака и гору.';
+// One example per direction — an earlier single-example (RU idiom → KO only)
+// version translated a KO→RU idiom completely literally, so the rule reads
+// as direction-specific here on purpose, with an example each way.
+function idiomInstruction(fromLang, toLang) {
+  return `Фразеологизмы, идиомы, пословицы и устойчивые выражения нельзя переводить дословно ни в одном направлении (это касается перевода как с ${fromLang} на ${toLang}, так и наоборот) — подбирай существующий эквивалент в языке перевода, а если точного эквивалента нет, передай смысл выражения обычными словами. Например: русское "когда рак на горе свистнет" (значение — "никогда") на корейский переводится через смысловой эквивалент "해가 서쪽에서 뜨면" ("когда солнце взойдёт на западе"), а не дословно про рака и гору; и наоборот, корейское "새 발의 피" (буквально "кровь из птичьей лапки", значение — "ничтожно малое количество") на русский переводится как "капля в море", а не буквальным описанием птичьей лапки.`;
+}
 // Mirrors the frontend's MAX_CONTEXT_TURNS/session-gap logic (App.js) — the
 // client is trusted to pick the right turns (same-scenario, <2h idle gaps),
 // but length/shape are re-validated here since request bodies aren't trusted
@@ -136,7 +141,7 @@ app.post('/translate', async (req, res) => {
   }
 
   const messages = [
-    { role: 'system', content: `${systemPrompt}\n\n${IDIOM_INSTRUCTION}` },
+    { role: 'system', content: `${systemPrompt}\n\n${idiomInstruction(fromLang, toLang)}` },
   ];
   if (contextHistory.length) {
     const transcript = contextHistory

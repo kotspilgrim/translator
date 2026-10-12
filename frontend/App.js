@@ -36,7 +36,7 @@ import MlkitTranslate from './modules/mlkit-translate/src/MlkitTranslateModule';
 import { t, INTERFACE_LANGUAGES, SOURCE_LANGUAGES, LANG_LOCALE, LANG_RU_NAME, scenarioName } from './i18n';
 
 // ── Config ───────────────────────────────────────────────────────────────────
-const BACKEND_URL   = 'https://translator-production-6a87.up.railway.app';
+const BACKEND_URL   = 'https://translator-bcn1.onrender.com';
 const HISTORY_KEY   = 'translation_history';
 const THEME_KEY     = 'translator_theme';
 const AUTH_TOKEN_KEY = 'translator_auth_token';
@@ -134,10 +134,15 @@ const COLORS = {
 
     pinAccent: '#f0b429',
 
-    chatRuBg: '#5b21b6', chatRuText: '#ffffff',
-    chatRuSep: 'rgba(255,255,255,0.3)', chatRuTrans: 'rgba(255,255,255,0.65)', chatRuTime: 'rgba(255,255,255,0.3)',
-    chatKoBg: '#1f1f1f', chatKoBorder: 'transparent', chatKoText: '#ffffff',
-    chatKoSep: 'rgba(255,255,255,0.3)', chatKoTrans: 'rgba(255,255,255,0.65)', chatKoTime: 'rgba(255,255,255,0.3)',
+    // "Tinted" history screen: dark slate background; KO (left) = muted,
+    // low-contrast blue-gray; RU (right) = brighter saturated blue accent —
+    // matching the reference mockup's card background plus its two
+    // placeholder bars (History screen only — histBg, not the shared c.bg).
+    histBg: '#0f0f0f',
+    chatRuBg: '#4a8fe0', chatRuText: '#ffffff',
+    chatRuSep: 'rgba(255,255,255,0.35)', chatRuTrans: 'rgba(255,255,255,0.75)', chatRuTime: 'rgba(255,255,255,0.55)',
+    chatKoBg: '#5b6673', chatKoBorder: 'transparent', chatKoText: '#ffffff',
+    chatKoSep: 'rgba(255,255,255,0.3)', chatKoTrans: 'rgba(255,255,255,0.65)', chatKoTime: 'rgba(255,255,255,0.4)',
 
     menuDrawerBg: '#161616', menuDrawerBorder: '#242424', menuBrand: '#ffffff', menuSub: '#555',
     menuIcon: '#8f8f8f', menuText: '#c9c9c9', menuDivider: '#242424', themeToggleIcon: '#f0b429',
@@ -204,10 +209,15 @@ const COLORS = {
 
     pinAccent: '#e0a000',
 
-    chatRuBg: '#6d28d9', chatRuText: '#ffffff',
-    chatRuSep: 'rgba(255,255,255,0.4)', chatRuTrans: 'rgba(255,255,255,0.7)', chatRuTime: 'rgba(255,255,255,0.4)',
-    chatKoBg: '#ffffff', chatKoBorder: '#e8e8ee', chatKoText: '#222222',
-    chatKoSep: '#bbbbbb', chatKoTrans: '#777777', chatKoTime: '#aaaaaa',
+    // "Day" history screen: light cyan background; KO (left) = almost
+    // white; RU (right) = a desaturated tint of the main bubbleBorderActive
+    // accent (#5383F5) — same hue, muted, not the fully-saturated accent
+    // itself (History screen only — histBg, not the shared c.bg).
+    histBg: '#f4f4f7',
+    chatRuBg: '#a8c4f7', chatRuText: '#1c1c1e',
+    chatRuSep: 'rgba(0,0,0,0.15)', chatRuTrans: 'rgba(0,0,0,0.55)', chatRuTime: 'rgba(0,0,0,0.35)',
+    chatKoBg: '#ffffff', chatKoBorder: 'transparent', chatKoText: '#1c1c1e',
+    chatKoSep: 'rgba(0,0,0,0.15)', chatKoTrans: 'rgba(0,0,0,0.55)', chatKoTime: 'rgba(0,0,0,0.35)',
 
     menuDrawerBg: '#ffffff', menuDrawerBorder: '#e5e5ea', menuBrand: '#111111', menuSub: '#aaa',
     menuIcon: '#888', menuText: '#333', menuDivider: '#eeeeee', themeToggleIcon: '#6d28d9',
@@ -1190,7 +1200,9 @@ export default function App() {
   }, [fontsLoaded, fontError]);
 
   // 'boot' while checking for a stored session, then one of
-  // 'signin' | 'signup' | 'verify' | 'main' | 'history' | 'packs'
+  // 'signin' | 'signup' | 'verify' | 'main' | 'packs'
+  // (History is a sliding overlay on top of 'main' — see showHistory below —
+  // not a `screen` value, so it can animate in/out.)
   const [screen,     setScreen]     = useState('boot');
   const [showMenu,   setShowMenu]   = useState(false);
 
@@ -1204,6 +1216,13 @@ export default function App() {
   const formScrollMaxHeight = Math.round(windowHeight * 0.45);
   const menuDrawerWidth = Math.round(windowWidth * 0.74); // matches menuDrawer's width: '74%'
 
+  // Shared spring config for panel-style slide transitions (menu, history)
+  // below — a spring reads noticeably smoother than a fixed-duration eased
+  // timing here, since it decelerates continuously into the resting
+  // position instead of easing on a rigid clock; friction is high enough
+  // that it settles without any visible overshoot/bounce.
+  const PANEL_SPRING = { friction: 10, tension: 70, useNativeDriver: true };
+
   // ── Menu drawer open/close animation ────────────────────────────────────────
   // menuMounted stays true through the closing animation — {showMenu && ...}
   // would unmount instantly with no time to animate out.
@@ -1213,28 +1232,50 @@ export default function App() {
     if (showMenu) {
       setMenuMounted(true);
       menuAnim.setValue(0);
-      Animated.timing(menuAnim, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+      Animated.spring(menuAnim, { ...PANEL_SPRING, toValue: 1 }).start();
     } else {
-      Animated.timing(menuAnim, { toValue: 0, duration: 220, easing: Easing.in(Easing.cubic), useNativeDriver: true })
+      Animated.spring(menuAnim, { ...PANEL_SPRING, toValue: 0 })
         .start(({ finished }) => { if (finished) setMenuMounted(false); });
     }
   }, [showMenu]);
 
-  // ── Hardware/gesture back: on 'history'/'packs' (menu-reached sub-screens,
-  // no navigation stack) return to 'main'; on 'main' itself, close the menu
-  // if open, otherwise require a second press within 2s to exit (Android
-  // convention). Auth screens (signin/signup/verify/...) keep no override —
-  // default Android behavior applies there. ─────────────────────────────────
+  // ── History screen slide-in animation ───────────────────────────────────────
+  // Rendered as an overlay on top of the main screen (not a `screen` state
+  // switch) specifically so it can slide in from the right, same
+  // mounted-through-the-close-animation pattern as the menu drawer above.
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyMounted, setHistoryMounted] = useState(false);
+  const historyAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (showHistory) {
+      setHistoryMounted(true);
+      historyAnim.setValue(0);
+      Animated.spring(historyAnim, { ...PANEL_SPRING, toValue: 1 }).start();
+    } else {
+      Animated.spring(historyAnim, { ...PANEL_SPRING, toValue: 0 })
+        .start(({ finished }) => { if (finished) setHistoryMounted(false); });
+    }
+  }, [showHistory]);
+  const openHistory  = () => setShowHistory(true);
+  const closeHistory = () => setShowHistory(false);
+
+  // ── Hardware/gesture back: on 'packs' (a menu-reached sub-screen, no
+  // navigation stack) return to 'main'; on 'main' itself, close the History
+  // overlay first if open, then the menu if open, otherwise require a second
+  // press within 2s to exit (Android convention). Auth screens
+  // (signin/signup/verify/...) keep no override — default Android behavior
+  // applies there. ─────────────────────────────────────────────────────────
   const exitArmedRef = useRef(false);
   const exitTimerRef = useRef(null);
   useEffect(() => {
-    if (screen === 'history' || screen === 'packs') {
+    if (screen === 'packs') {
       const onBackPress = () => { setScreen('main'); return true; };
       const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
       return () => sub.remove();
     }
     if (screen !== 'main') return;
     const onBackPress = () => {
+      if (showHistory) { closeHistory(); return true; }
       if (showMenu) { setShowMenu(false); return true; }
       if (exitArmedRef.current) {
         BackHandler.exitApp();
@@ -1248,7 +1289,7 @@ export default function App() {
     };
     const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => sub.remove();
-  }, [screen, showMenu, interfaceLang]);
+  }, [screen, showMenu, showHistory, interfaceLang]);
 
   // ── Auto connection status (passive, pings /health every 5s) ───────────────
   const [autoConnOk, setAutoConnOk] = useState(null); // null = not checked yet | true | false
@@ -2084,37 +2125,40 @@ export default function App() {
     justClosedTimer.current = setTimeout(() => { justClosedRef.current = false; }, 350);
   }, []);
 
+  // Any way of leaving typing mode WITHOUT pressing the input's own "Done"
+  // (back button/gesture, tapping away, tapping the other bubble) should
+  // still translate whatever was typed, just after a 1s grace period in
+  // case the keyboard reopens (e.g. a stray dismiss-then-refocus). Pressing
+  // "Done" already translates immediately via handleRuSubmit/handleKoSubmit
+  // and never calls this.
+  const keyboardVisibleRef = useRef(false);
+  const scheduleAutoTranslateAfterHide = useCallback(bubble => {
+    setTimeout(() => {
+      if (keyboardVisibleRef.current) return; // reopened within the 1s window — leave as-is
+      const text = (bubble === 'ru' ? ruTextRef.current : koTextRef.current).trim();
+      if (!text) return;
+      if (bubble === 'ru') doTranslate(text, LANG_RU_NAME[sourceLangRef.current], 'корейский', 'ru');
+      else                 doTranslate(text, 'корейский', LANG_RU_NAME[sourceLangRef.current], 'ko');
+    }, 1000);
+  }, []);
+
   // Android's hardware back button (and some keyboards' own dismiss gesture)
   // hides the keyboard without blurring the focused TextInput, so the
-  // TextInput's own onBlur never fires and typingBubble is left stuck at
-  // 'ru' — the KO bubble/mic rows stay hidden even though the keyboard is
-  // gone. Listening for the OS-level hide event closes typing mode
-  // regardless of how the keyboard went away.
-  //
-  // If that happened without the user pressing the input's own "Done" (which
-  // already translates immediately via handleRuSubmit/handleKoSubmit —
-  // typingBubbleRef.current is already null by the time keyboardDidHide fires
-  // for that path, so this doesn't double-fire), wait 1s and translate
-  // whatever text is there — unless the keyboard came back up in the
-  // meantime, in which case leave it alone.
-  const keyboardVisibleRef = useRef(false);
+  // TextInput's own onBlur never fires and typingBubble is left stuck — the
+  // other bubble/mic rows stay hidden even though the keyboard is gone.
+  // Listening for the OS-level hide event closes typing mode regardless of
+  // how the keyboard went away, and schedules the auto-translate above.
   useEffect(() => {
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
       keyboardVisibleRef.current = false;
       const bubble = typingBubbleRef.current;
       if (!bubble) return;
       closeTypingMode();
-      setTimeout(() => {
-        if (keyboardVisibleRef.current) return; // reopened within the 1s window — leave as-is
-        const text = (bubble === 'ru' ? ruTextRef.current : koTextRef.current).trim();
-        if (!text) return;
-        if (bubble === 'ru') doTranslate(text, LANG_RU_NAME[sourceLangRef.current], 'корейский', 'ru');
-        else                 doTranslate(text, 'корейский', LANG_RU_NAME[sourceLangRef.current], 'ko');
-      }, 1000);
+      scheduleAutoTranslateAfterHide(bubble);
     });
     const showSub = Keyboard.addListener('keyboardDidShow', () => { keyboardVisibleRef.current = true; });
     return () => { hideSub.remove(); showSub.remove(); };
-  }, [closeTypingMode]);
+  }, [closeTypingMode, scheduleAutoTranslateAfterHide]);
 
   const handleBubbleTap = bubble => {
     if (recognizing || translating) return;
@@ -2125,8 +2169,10 @@ export default function App() {
     }
 
     if (typingBubble) {
+      const wasTyping = typingBubble;
       Keyboard.dismiss();
       setTypingBubble(null);
+      scheduleAutoTranslateAfterHide(wasTyping);
       if (typingBubble !== bubble) { setActiveBubble(bubble); activeBubbleRef.current = bubble; }
       return;
     }
@@ -2262,19 +2308,6 @@ export default function App() {
     );
   }
 
-  if (screen === 'history') {
-    return (
-      <HistoryScreen
-        history={history}
-        scenarios={scenarios}
-        initialScenarioId={scenarioId}
-        onBack={() => setScreen('main')}
-        theme={theme}
-        lang={interfaceLang}
-      />
-    );
-  }
-
   if (screen === 'packs') {
     return <LanguagePacksScreen theme={theme} onBack={() => setScreen('main')} lang={interfaceLang} sourceLang={sourceLang} />;
   }
@@ -2381,7 +2414,7 @@ export default function App() {
             <Text style={S.scenTxt} numberOfLines={1}>{isGuest ? tr('noScenarioGuest') : (scenario || tr('noScenarioSelected'))}</Text>
             <MI name="expand-more" size={20} color={c.iconDim} />
           </TouchableOpacity>
-          <TouchableOpacity style={S.histBtn} onPress={() => setScreen('history')}>
+          <TouchableOpacity style={S.histBtn} onPress={openHistory}>
             <MI name="history" size={20} color={c.iconMid} />
           </TouchableOpacity>
         </View>
@@ -2425,7 +2458,14 @@ export default function App() {
                 blurOnSubmit
                 returnKeyType="done"
                 onSubmitEditing={handleRuSubmit}
-                onBlur={closeTypingMode}
+                onBlur={() => {
+                  // blurOnSubmit also fires this right after a "Done" press
+                  // (handleRuSubmit), which has already closed typing mode
+                  // and translated — skip re-scheduling in that case.
+                  if (typingBubbleRef.current !== 'ru') return;
+                  closeTypingMode();
+                  scheduleAutoTranslateAfterHide('ru');
+                }}
                 style={S.bubbleInput}
                 placeholder={ruPlaceholder}
                 placeholderTextColor={c.bubbleInputPh}
@@ -2530,7 +2570,7 @@ export default function App() {
               <MI name="list" size={20} color={c.menuIcon} />
               <Text style={S.menuItemTxt}>{tr('menuScenarios')}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); setScreen('history'); }}>
+            <TouchableOpacity style={S.menuItem} onPress={() => { setShowMenu(false); openHistory(); }}>
               <MI name="history" size={20} color={c.menuIcon} />
               <Text style={S.menuItemTxt}>{tr('menuHistory')}</Text>
             </TouchableOpacity>
@@ -2565,6 +2605,28 @@ export default function App() {
             )}
           </Animated.View>
         </AnimatedTouchable>
+      )}
+
+      {/* ── History screen — slides in from the right over the main screen,
+           rather than a `screen` state switch, specifically so it can
+           animate; same mounted-through-close pattern as the menu drawer
+           above. ── */}
+      {historyMounted && (
+        <Animated.View
+          style={[
+            S.historyOverlay,
+            { transform: [{ translateX: historyAnim.interpolate({ inputRange: [0, 1], outputRange: [windowWidth, 0] }) }] },
+          ]}
+        >
+          <HistoryScreen
+            history={history}
+            scenarios={scenarios}
+            initialScenarioId={scenarioId}
+            onBack={closeHistory}
+            theme={theme}
+            lang={interfaceLang}
+          />
+        </Animated.View>
       )}
 
       {/* ── Interface language picker ── */}
@@ -2611,7 +2673,7 @@ export default function App() {
         <TouchableOpacity
           style={S.koBackdrop}
           activeOpacity={1}
-          onPress={() => { Keyboard.dismiss(); closeTypingMode(); }}
+          onPress={() => { Keyboard.dismiss(); closeTypingMode(); scheduleAutoTranslateAfterHide('ko'); }}
         >
           <View style={S.koPanel} onStartShouldSetResponder={() => true}>
             <Text style={S.koPanelHint}>한국어 텍스트 입력 · Enter로 전송</Text>
@@ -2842,6 +2904,8 @@ function makeStyles(c, theme) {
     // elevation forced to 0 (even in light theme, where SHADOW_SM would
     // otherwise set elevation:2) — see menuScrim below for why.
   },
+  // Sits above the menu (zIndex 90) in case both were ever open at once.
+  historyOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 95 },
   menuScrim: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: c.menuScrimBg, zIndex: 90,
@@ -3009,7 +3073,7 @@ function makeStyles(c, theme) {
   },
 
   // History screen
-  histCont:  { flex: 1, backgroundColor: c.bg, paddingTop: 48 },
+  histCont:  { flex: 1, backgroundColor: c.histBg, paddingTop: 48 },
   histHead: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 16, paddingBottom: 14, paddingTop: 10,

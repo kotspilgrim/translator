@@ -247,10 +247,10 @@ Font is loaded via `expo-font` config plugin in `app.json` (copies TTF to native
 **`BACKEND_URL` in `frontend/App.js:37`:**
 
 ```js
-const BACKEND_URL = 'https://translator-production-6a87.up.railway.app'; // Railway (public)
+const BACKEND_URL = 'X
 ```
 
-- **Railway (public)** — live, deployed from this repo's `main` branch (GitHub-connected auto-deploy), Root Directory `backend`. `GET /health` → `{"ok":true}`. This is what a Play Store release build must point at — Android blocks plain-HTTP cleartext traffic by default in release builds, so the Tailscale/LAN options below only ever worked in dev-client debug builds anyway.
+- **Render (public, free tier — sleeps after 15 min idle, keep it warm with an external ping to `/health`)** — live, deployed from this repo's `main` branch (GitHub-connected auto-deploy), Root Directory `backend`. `GET /health` → `{"ok":true}`. This is what a Play Store release build must point at — Android blocks plain-HTTP cleartext traffic by default in release builds, so the Tailscale/LAN options below only ever worked in dev-client debug builds anyway.
 - **Tailscale IP** (`http://100.68.162.96:3000`) — local-dev fallback, works on any network as long as Tailscale is active on both Windows host and Android phone
 - **LAN IP** (`http://192.168.35.219:3000`) — fallback if Tailscale is down, same Wi-Fi only
 - **USB dev** — run `adb reverse tcp:3000 tcp:3000` and set URL to `http://localhost:3000`
@@ -317,7 +317,7 @@ After changing icons, run `npx expo prebuild --platform android` to regenerate m
 
 ## Standalone release build (personal testing, not Play Store)
 
-For installing a real, non-dev-client build on your own phone — no Metro required at runtime, works anywhere with internet since `BACKEND_URL` now points at Railway — without any of the Play Store account/signing overhead (see "Play Store release" in Future Roadmap for that separate, heavier path):
+For installing a real, non-dev-client build on your own phone — no Metro required at runtime, works anywhere with internet since `BACKEND_URL` now points at Render — without any of the Play Store account/signing overhead (see "Play Store release" in Future Roadmap for that separate, heavier path):
 
 ```bash
 cd frontend/android
