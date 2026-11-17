@@ -66,12 +66,22 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 app.use('/scenarios', limiter, scenariosRouter);
 app.use('/health', limiter);
 
+const HEALTH_OK_TTL_MS = 60 * 1000;
+let lastOpenAiOkAt = 0;
+
 app.get('/health', async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ ok: false, error: 'OPENAI_API_KEY не настроен' });
   }
+  // The app pings this every 5s; a round trip to OpenAI on each ping costs
+  // ~600ms. Reuse a recent successful check instead — failures are never
+  // cached, so recovery is still noticed on the very next ping.
+  if (Date.now() - lastOpenAiOkAt < HEALTH_OK_TTL_MS) {
+    return res.json({ ok: true });
+  }
   try {
     await openai.models.retrieve('gpt-4o');
+    lastOpenAiOkAt = Date.now();
     res.json({ ok: true });
   } catch (error) {
     res.status(502).json({ ok: false, error: 'Нет связи с OpenAI' });
